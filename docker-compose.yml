@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: raggman_db
+    environment:
+      POSTGRES_USER: raggman
+      POSTGRES_PASSWORD: secretpassword
+      POSTGRES_DB: raggman_db
+    ports:
+     - "5432:5432"
+    volumes: 
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raggman -d raggman_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: raggman_jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports: 
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

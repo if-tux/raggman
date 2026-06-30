@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS chunks;
+DROP TABLE IF EXISTS documents;
+DROP TABLE IF EXISTS job_queue;
