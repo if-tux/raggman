@@ -1,0 +1,22 @@
+commit-msg:
+  commands:
+    lint-commit-msg:
+      run: |
+        commit_msg=$(cat {1})
+        regex="^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9\-]+\))?!?: .+$
+        if ! echo "$commit_msg" | grep -Eq "$regex"; then
+          echo "❌ Error: Non-semantic commit message!"
+          echo "Your message: '$commit_msg'"
+          echo "Expected format: type(scope): description (e.g., feat(infra): add logger configuration)"
+          exit 1
+        fi
+        echo "✅ Valid commit message!" 
+
+pre-commit:
+  commands:
+    go-fmt:
+      run: go fmt ./...
+    go-vet:
+      run: go vet ./...
+    struct-alignment:
+      run: fieldalignment -fix ./...
