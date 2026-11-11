@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/environment"
-	"github.com/BrunoPereiradosSantos/raggman/internal/ingestion"
+	"github.com/BrunoPereiradosSantos/raggman/internal/queue"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
@@ -20,10 +20,10 @@ import (
 const shutdownTimeout = 30 * time.Second
 
 type App struct {
-	Tracing   *sdktrace.TracerProvider
-	Env       *environment.Environment
-	Handler   http.Handler
-	Ingestion *ingestion.Workers
+	Tracing *sdktrace.TracerProvider
+	Env     *environment.Environment
+	Handler http.Handler
+	Workers *queue.Workers
 }
 
 func main() {
@@ -43,12 +43,12 @@ func run(ctx context.Context) error {
 	}
 	defer cleanup()
 
-	ctx, stopIngestion := context.WithCancel(ctx)
-	defer stopIngestion()
-	ingestionDone := make(chan struct{})
+	ctx, stopWorkers := context.WithCancel(ctx)
+	defer stopWorkers()
+	workersDone := make(chan struct{})
 	go func() {
-		app.Ingestion.Run(ctx)
-		close(ingestionDone)
+		app.Workers.Run(ctx)
+		close(workersDone)
 	}()
 
 	// Requests get their own context so long Answer streams can be stopped
@@ -71,8 +71,8 @@ func run(ctx context.Context) error {
 	select {
 	case err := <-serveErr:
 		// Let workers finish their transactions before cleanup closes the pool.
-		stopIngestion()
-		<-ingestionDone
+		stopWorkers()
+		<-workersDone
 		return err
 	case <-ctx.Done():
 	}
@@ -85,9 +85,9 @@ func run(ctx context.Context) error {
 
 	err = server.Shutdown(shutdownCtx)
 	select {
-	case <-ingestionDone:
+	case <-workersDone:
 	case <-shutdownCtx.Done():
-		slog.Warn("Ingestion workers did not stop before the shutdown timeout")
+		slog.Warn("Workers did not stop before the shutdown timeout")
 	}
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err

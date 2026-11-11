@@ -11,6 +11,9 @@ sql:
         sql_package: "pgx/v5"
         emit_json_tags: true
         emit_interface: false
+        # sqlc singularises "termbases" to "Termbasis"; the glossary says Termbase.
+        rename:
+          termbasis: "Termbase"
         overrides:
           - db_type: "uuid"
             go_type:

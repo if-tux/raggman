@@ -18,13 +18,13 @@ func clearQueue(t *testing.T) {
 	}
 }
 
-// startIngestion runs the workers until the test ends or stop is called.
+// startIngestion runs the queue workers until the test ends or stop is called.
 func startIngestion(t *testing.T, app *App) (stop func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		app.Ingestion.Run(ctx)
+		app.Workers.Run(ctx)
 		close(done)
 	}()
 	var once sync.Once

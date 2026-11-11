@@ -16,18 +16,21 @@ type bookResponse struct {
 	Filename  string    `json:"filename"`
 	Title     string    `json:"title"`
 	Language  string    `json:"language,omitempty"`
-	Blocks    int       `json:"blocks"`
-	ID        uuid.UUID `json:"id"`
+	// Translations of the Book, oldest first.
+	Translations []translationResponse `json:"translations"`
+	Blocks       int                   `json:"blocks"`
+	ID           uuid.UUID             `json:"id"`
 }
 
-func toBookResponse(b domain.Book) bookResponse {
+func toBookResponse(b domain.Book, translations []domain.Translation) bookResponse {
 	return bookResponse{
-		ID:        b.ID,
-		Filename:  b.Filename,
-		Title:     b.Title,
-		Language:  b.Language,
-		Blocks:    b.TotalBlocks,
-		CreatedAt: b.CreatedAt,
+		ID:           b.ID,
+		Filename:     b.Filename,
+		Title:        b.Title,
+		Language:     b.Language,
+		Blocks:       b.TotalBlocks,
+		CreatedAt:    b.CreatedAt,
+		Translations: toTranslationResponses(translations),
 	}
 }
 
@@ -54,11 +57,16 @@ func (h *handler) submitBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	resp, err := h.bookTranslations(r.Context(), book)
+	if err != nil {
+		internalError(w, r, err)
+		return
+	}
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
 	}
-	writeJSON(w, status, toBookResponse(book))
+	writeJSON(w, status, resp)
 }
 
 func (h *handler) listBooks(w http.ResponseWriter, r *http.Request) {
@@ -67,9 +75,20 @@ func (h *handler) listBooks(w http.ResponseWriter, r *http.Request) {
 		internalError(w, r, err)
 		return
 	}
+	// ponytail: every Translation is loaded to group them by Book. There is no
+	// pagination anywhere yet; filter by the listed Books when there is.
+	translations, err := h.translations.List(r.Context())
+	if err != nil {
+		internalError(w, r, err)
+		return
+	}
+	byBook := make(map[uuid.UUID][]domain.Translation)
+	for _, t := range translations {
+		byBook[t.BookID] = append(byBook[t.BookID], t)
+	}
 	resp := make([]bookResponse, len(list))
 	for i, b := range list {
-		resp[i] = toBookResponse(b)
+		resp[i] = toBookResponse(b, byBook[b.ID])
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -88,7 +107,12 @@ func (h *handler) getBook(w http.ResponseWriter, r *http.Request) {
 		internalError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toBookResponse(book))
+	resp, err := h.bookTranslations(r.Context(), book)
+	if err != nil {
+		internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *handler) removeBook(w http.ResponseWriter, r *http.Request) {

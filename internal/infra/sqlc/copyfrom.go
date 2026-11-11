@@ -44,3 +44,39 @@ func (r iteratorForCreateBlocks) Err() error {
 func (q *Queries) CreateBlocks(ctx context.Context, arg []CreateBlocksParams) (int64, error) {
 	return q.db.CopyFrom(ctx, []string{"blocks"}, []string{"book_id", "position", "chapter", "kind", "source"}, &iteratorForCreateBlocks{rows: arg})
 }
+
+// iteratorForCreateTerms implements pgx.CopyFromSource.
+type iteratorForCreateTerms struct {
+	rows                 []CreateTermsParams
+	skippedFirstNextCall bool
+}
+
+func (r *iteratorForCreateTerms) Next() bool {
+	if len(r.rows) == 0 {
+		return false
+	}
+	if !r.skippedFirstNextCall {
+		r.skippedFirstNextCall = true
+		return true
+	}
+	r.rows = r.rows[1:]
+	return len(r.rows) > 0
+}
+
+func (r iteratorForCreateTerms) Values() ([]interface{}, error) {
+	return []interface{}{
+		r.rows[0].TermbaseID,
+		r.rows[0].Source,
+		r.rows[0].Rendering,
+		r.rows[0].Kind,
+		r.rows[0].Occurrences,
+	}, nil
+}
+
+func (r iteratorForCreateTerms) Err() error {
+	return nil
+}
+
+func (q *Queries) CreateTerms(ctx context.Context, arg []CreateTermsParams) (int64, error) {
+	return q.db.CopyFrom(ctx, []string{"terms"}, []string{"termbase_id", "source", "rendering", "kind", "occurrences"}, &iteratorForCreateTerms{rows: arg})
+}

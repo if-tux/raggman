@@ -17,6 +17,8 @@ import (
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/postgres"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/telemetry"
 	"github.com/BrunoPereiradosSantos/raggman/internal/ingestion"
+	"github.com/BrunoPereiradosSantos/raggman/internal/queue"
+	"github.com/BrunoPereiradosSantos/raggman/internal/translation"
 )
 
 // Injectors from wire.go:
@@ -39,17 +41,35 @@ func InitializeApp(ctx context.Context) (*App, func(), error) {
 	}
 	service := documents.NewService(pool)
 	booksService := books.NewService(pool)
+	translationService := translation.NewService(pool)
 	answeringService := answering.New(pool, environmentEnvironment, tracerProvider)
-	handler := api.NewHandler(pool, service, booksService, answeringService, tracerProvider)
-	workers := ingestion.New(pool, environmentEnvironment, slogLogger, tracerProvider)
+	handler := api.NewHandler(pool, service, booksService, translationService, answeringService, tracerProvider)
+	ingestionHandler := ingestion.New(pool, environmentEnvironment, tracerProvider)
+	extraction := translation.NewExtraction(pool, environmentEnvironment, slogLogger)
+	v := jobGroups(ingestionHandler, extraction)
+	workers := queue.New(pool, slogLogger, tracerProvider, v)
 	app := &App{
-		Tracing:   tracerProvider,
-		Env:       environmentEnvironment,
-		Handler:   handler,
-		Ingestion: workers,
+		Tracing: tracerProvider,
+		Env:     environmentEnvironment,
+		Handler: handler,
+		Workers: workers,
 	}
 	return app, func() {
 		cleanup2()
 		cleanup()
 	}, nil
+}
+
+// wire.go:
+
+// jobGroups registers the Handler of every Job type the workers run.
+// Translation work gets workers of its own, one at a time: it runs for hours
+// on a local model, and must not keep Ingestion waiting.
+//
+// Translation Jobs have no Handler yet, so they wait in the queue.
+func jobGroups(ingest *ingestion.Handler, extraction *translation.Extraction) []queue.Group {
+	return []queue.Group{
+		{Workers: 2, Handlers: queue.Handlers{documents.JobTypeIngestion: ingest}},
+		{Workers: 1, Handlers: queue.Handlers{translation.JobTypeExtraction: extraction}},
+	}
 }

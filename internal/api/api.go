@@ -13,6 +13,7 @@ import (
 	"github.com/BrunoPereiradosSantos/raggman/internal/documents"
 	"github.com/BrunoPereiradosSantos/raggman/internal/domain"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/telemetry"
+	"github.com/BrunoPereiradosSantos/raggman/internal/translation"
 	"github.com/BrunoPereiradosSantos/raggman/internal/web"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -21,14 +22,15 @@ import (
 )
 
 type handler struct {
-	pool      *pgxpool.Pool
-	documents *documents.Service
-	books     *books.Service
-	answering *answering.Service
+	pool         *pgxpool.Pool
+	documents    *documents.Service
+	books        *books.Service
+	translations *translation.Service
+	answering    *answering.Service
 }
 
-func NewHandler(pool *pgxpool.Pool, docs *documents.Service, bks *books.Service, answers *answering.Service, tp *sdktrace.TracerProvider) http.Handler {
-	h := &handler{pool: pool, documents: docs, books: bks, answering: answers}
+func NewHandler(pool *pgxpool.Pool, docs *documents.Service, bks *books.Service, translations *translation.Service, answers *answering.Service, tp *sdktrace.TracerProvider) http.Handler {
+	h := &handler{pool: pool, documents: docs, books: bks, translations: translations, answering: answers}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("POST /documents", h.submitDocument)
@@ -40,6 +42,11 @@ func NewHandler(pool *pgxpool.Pool, docs *documents.Service, bks *books.Service,
 	mux.HandleFunc("GET /books", h.listBooks)
 	mux.HandleFunc("GET /books/{id}", h.getBook)
 	mux.HandleFunc("DELETE /books/{id}", h.removeBook)
+	mux.HandleFunc("POST /books/{id}/translations", h.startTranslation)
+	mux.HandleFunc("GET /translations/{id}", h.getTranslation)
+	mux.HandleFunc("GET /translations/{id}/termbase", h.getTermbase)
+	mux.HandleFunc("PUT /translations/{id}/termbase", h.replaceTerms)
+	mux.HandleFunc("POST /translations/{id}/termbase/approve", h.approveTermbase)
 	mux.Handle("GET /", web.Handler())
 
 	// otelhttp names each server span after the matched route ("POST
@@ -93,8 +100,8 @@ func internalError(w http.ResponseWriter, r *http.Request, err error) {
 	writeError(w, http.StatusInternalServerError, "internal error")
 }
 
-// pathID parses the {id} path value of a document or a book; malformed ids are
-// treated as unknown.
+// pathID parses the {id} path value of a document, a book or a translation;
+// malformed ids are treated as unknown.
 func pathID(w http.ResponseWriter, r *http.Request, what string) (uuid.UUID, bool) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
