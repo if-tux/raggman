@@ -1,4 +1,38 @@
 services:
+  app:
+    build: .
+    container_name: raggman_app
+    environment:
+      APP_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgres://raggman:secretpassword@postgres:5432/raggman_db?sslmode=disable
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      # Answer generation; point at any OpenAI-compatible provider to use an API key.
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://ollama:11434/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-qwen3:8b}
+      # Embeddings always stay on Ollama. On macOS, for GPU, set OLLAMA_HOST=http://host.docker.internal:11434
+      # and LLM_BASE_URL=http://host.docker.internal:11434/v1.
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-qwen3-embedding:0.6b}
+      TOP_K: ${TOP_K:-5}
+      MIN_SIMILARITY: ${MIN_SIMILARITY:-0.5}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+      ollama-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    stop_grace_period: 40s
+
   postgres:
     image: pgvector/pgvector:pg16
     container_name: raggman_db
@@ -7,8 +41,8 @@ services:
       POSTGRES_PASSWORD: secretpassword
       POSTGRES_DB: raggman_db
     ports:
-     - "5432:5432"
-    volumes: 
+      - "5432:5432"
+    volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U raggman -d raggman_db"]
@@ -21,7 +55,7 @@ services:
     container_name: raggman_jaeger
     environment:
       - COLLECTOR_OTLP_ENABLED=true
-    ports: 
+    ports:
       - "16686:16686"
       - "4317:4317"
       - "4318:4318"
@@ -31,5 +65,44 @@ services:
       timeout: 5s
       retries: 5
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: raggman_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Pulls the configured models before the app starts. The chat model is
+  # skipped when LLM_API_KEY is set: local Ollama needs no key, so a key means
+  # Answers go to a cloud provider.
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: raggman_ollama_init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-qwen3:8b}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-qwen3-embedding:0.6b}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        ollama pull "$$EMBEDDING_MODEL"
+        if [ -z "$$LLM_API_KEY" ]; then
+          ollama pull "$$LLM_MODEL"
+        else
+          echo "LLM_API_KEY is set; Answers use a cloud provider, skipping chat model pull"
+        fi
+
 volumes:
   pgdata:
+  ollama:

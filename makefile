@@ -1,11 +1,11 @@
 DB_URL := "postgres://raggman:secretpassword@localhost:5432/raggman_db?sslmode=disable"
-MIGRATION_PATH := "internal/postgres/migrations"
+MIGRATION_PATH := "internal/infra/postgres/migrations"
 
 .PHONY: infra-up infra-down infra-logs ollama-start
 
 infra-up:
 	@echo "Spinning up Postgres (pgvector) and Jaeger..."
-	docker compose up -d
+	docker compose up -d postgres jaeger
 	@echo "Waiting for Postgres to be ready to apply pgvector..."
 	@until docker exec raggman_db pg_isready -U raggman -d raggman_db > /dev/null 2>&1; do sleep 1; done
 	@docker exec raggman_db psql -U raggman -d raggman_db -c "CREATE EXTENSION IF NOT EXISTS vector;"
@@ -19,8 +19,10 @@ infra-logs:
 	docker compose logs -f
 
 ollama-start:
-	@echo "Starting native Ollama with qwen2.5:7b..."
-	ollama run qwen2.5:7b
+	@echo "Checking Ollama server status..."
+	@curl -s http://localhost:11434 > /dev/null || (echo "Starting Ollama server in background..." && ollama serve & sleep 2)
+	ollama pull qwen3-embedding:0.6b
+	ollama pull qwen3:8b
 
 .PHONY: db-create-migration db-up db-down db-force pgvector-setup
 
@@ -47,15 +49,15 @@ sqlc:
 	sqlc generate
 
 dev:
-	go run cmd/api/main.go
+	go run ./cmd/api
 
 build:
 	@echo "Compiling Raggman"
-	go build -o bin/api cmd/api/main.go
+	go build -o bin/api ./cmd/api
 
 build-prod:
 	@echo "Compiling raggman optimized for production..."
-	CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/api cmd/api/main.go
+	CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/api ./cmd/api
 
 test:
 	go test -v -cover ./...

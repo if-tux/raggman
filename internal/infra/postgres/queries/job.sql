@@ -33,5 +33,5 @@ WHERE id = $1;
 -- name: FailedJob :exec
 UPDATE job_queue
 SET status = 'FAILED',
-    retry_count = retry_count + 1
+    attempts = attempts + 1
 WHERE id = $1;
