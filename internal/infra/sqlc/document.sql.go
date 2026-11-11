@@ -9,30 +9,32 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createDocument = `-- name: CreateDocument :one
 INSERT INTO documents (
-    id, file_hash, filename, total_pages, status
+    id, file_hash, filename, status
 ) VALUES (
-    $1, $2, $3, $4, $5
-) RETURNING id, file_hash, filename, total_pages, status, created_at, failure_reason
+    $1, $2, $3, $4
+)
+ON CONFLICT (file_hash) DO NOTHING
+RETURNING id, file_hash, filename, total_pages, status, created_at, failure_reason
 `
 
 type CreateDocumentParams struct {
-	ID         uuid.UUID `json:"id"`
-	FileHash   string    `json:"file_hash"`
-	Filename   string    `json:"filename"`
-	TotalPages int32     `json:"total_pages"`
-	Status     string    `json:"status"`
+	ID       uuid.UUID `json:"id"`
+	FileHash string    `json:"file_hash"`
+	Filename string    `json:"filename"`
+	Status   string    `json:"status"`
 }
 
+// Returns no row when a Document with the same content already exists.
 func (q *Queries) CreateDocument(ctx context.Context, arg CreateDocumentParams) (Document, error) {
 	row := q.db.QueryRow(ctx, createDocument,
 		arg.ID,
 		arg.FileHash,
 		arg.Filename,
-		arg.TotalPages,
 		arg.Status,
 	)
 	var i Document
@@ -48,13 +50,41 @@ func (q *Queries) CreateDocument(ctx context.Context, arg CreateDocumentParams) 
 	return i, err
 }
 
-const getDocumentByHash = `-- name: GetDocumentByHash :one
-SELECT id, file_hash, filename, total_pages, status, created_at, failure_reason FROM documents
-WHERE file_hash = $1 LIMIT 1
+const createDocumentFile = `-- name: CreateDocumentFile :exec
+INSERT INTO document_files (document_id, content)
+VALUES ($1, $2)
 `
 
-func (q *Queries) GetDocumentByHash(ctx context.Context, fileHash string) (Document, error) {
-	row := q.db.QueryRow(ctx, getDocumentByHash, fileHash)
+type CreateDocumentFileParams struct {
+	DocumentID uuid.UUID `json:"document_id"`
+	Content    []byte    `json:"content"`
+}
+
+func (q *Queries) CreateDocumentFile(ctx context.Context, arg CreateDocumentFileParams) error {
+	_, err := q.db.Exec(ctx, createDocumentFile, arg.DocumentID, arg.Content)
+	return err
+}
+
+const deleteDocument = `-- name: DeleteDocument :execrows
+DELETE FROM documents
+WHERE id = $1
+`
+
+func (q *Queries) DeleteDocument(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteDocument, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getDocument = `-- name: GetDocument :one
+SELECT id, file_hash, filename, total_pages, status, created_at, failure_reason FROM documents
+WHERE id = $1
+`
+
+func (q *Queries) GetDocument(ctx context.Context, id uuid.UUID) (Document, error) {
+	row := q.db.QueryRow(ctx, getDocument, id)
 	var i Document
 	err := row.Scan(
 		&i.ID,
@@ -68,18 +98,74 @@ func (q *Queries) GetDocumentByHash(ctx context.Context, fileHash string) (Docum
 	return i, err
 }
 
+const getDocumentByHashForUpdate = `-- name: GetDocumentByHashForUpdate :one
+SELECT id, file_hash, filename, total_pages, status, created_at, failure_reason FROM documents
+WHERE file_hash = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetDocumentByHashForUpdate(ctx context.Context, fileHash string) (Document, error) {
+	row := q.db.QueryRow(ctx, getDocumentByHashForUpdate, fileHash)
+	var i Document
+	err := row.Scan(
+		&i.ID,
+		&i.FileHash,
+		&i.Filename,
+		&i.TotalPages,
+		&i.Status,
+		&i.CreatedAt,
+		&i.FailureReason,
+	)
+	return i, err
+}
+
+const listDocuments = `-- name: ListDocuments :many
+SELECT id, file_hash, filename, total_pages, status, created_at, failure_reason FROM documents
+ORDER BY created_at DESC
+`
+
+func (q *Queries) ListDocuments(ctx context.Context) ([]Document, error) {
+	rows, err := q.db.Query(ctx, listDocuments)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Document
+	for rows.Next() {
+		var i Document
+		if err := rows.Scan(
+			&i.ID,
+			&i.FileHash,
+			&i.Filename,
+			&i.TotalPages,
+			&i.Status,
+			&i.CreatedAt,
+			&i.FailureReason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateDocumentStatus = `-- name: UpdateDocumentStatus :exec
 UPDATE documents
-SET status = $2
+SET status = $2,
+    failure_reason = $3
 WHERE id = $1
 `
 
 type UpdateDocumentStatusParams struct {
-	ID     uuid.UUID `json:"id"`
-	Status string    `json:"status"`
+	ID            uuid.UUID   `json:"id"`
+	Status        string      `json:"status"`
+	FailureReason pgtype.Text `json:"failure_reason"`
 }
 
 func (q *Queries) UpdateDocumentStatus(ctx context.Context, arg UpdateDocumentStatusParams) error {
-	_, err := q.db.Exec(ctx, updateDocumentStatus, arg.ID, arg.Status)
+	_, err := q.db.Exec(ctx, updateDocumentStatus, arg.ID, arg.Status, arg.FailureReason)
 	return err
 }

@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"github.com/BrunoPereiradosSantos/raggman/internal/api"
+	"github.com/BrunoPereiradosSantos/raggman/internal/documents"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/environment"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/logger"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/postgres"
@@ -27,7 +28,8 @@ func InitializeApp(ctx context.Context) (*App, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	handler := api.NewHandler(pool)
+	service := documents.NewService(pool)
+	handler := api.NewHandler(pool, service)
 	app := &App{
 		Env:     environmentEnvironment,
 		Handler: handler,
