@@ -13,6 +13,7 @@ import (
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/environment"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/logger"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/postgres"
+	"github.com/BrunoPereiradosSantos/raggman/internal/ingestion"
 )
 
 // Injectors from wire.go:
@@ -30,9 +31,11 @@ func InitializeApp(ctx context.Context) (*App, func(), error) {
 	}
 	service := documents.NewService(pool)
 	handler := api.NewHandler(pool, service)
+	workers := ingestion.New(pool, environmentEnvironment, slogLogger)
 	app := &App{
-		Env:     environmentEnvironment,
-		Handler: handler,
+		Env:       environmentEnvironment,
+		Handler:   handler,
+		Ingestion: workers,
 	}
 	return app, func() {
 		cleanup()

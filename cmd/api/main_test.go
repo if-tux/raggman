@@ -13,6 +13,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/BrunoPereiradosSantos/raggman/internal/infra/environment"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
@@ -40,13 +41,49 @@ func TestMain(m *testing.M) {
 	}
 	os.Setenv("DATABASE_URL", url)
 
+	llm := httptest.NewServer(http.HandlerFunc(stubEmbeddings))
+	os.Setenv("OLLAMA_HOST", llm.URL)
+
 	code := m.Run()
+	llm.Close()
 	_ = testcontainers.TerminateContainer(container)
 	os.Exit(code)
 }
 
-// newServer boots the fully wired app and serves it over HTTP.
-func newServer(t *testing.T) *httptest.Server {
+// stubEmbeddings stands in for Ollama's OpenAI-compatible /v1/embeddings:
+// a deterministic 1024-dim vector per input, and only for the fixed model.
+func stubEmbeddings(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Model string   `json:"model"`
+		Input []string `json:"input"`
+	}
+	if r.URL.Path != "/v1/embeddings" || json.NewDecoder(r.Body).Decode(&req) != nil {
+		http.Error(w, "unexpected request", http.StatusBadRequest)
+		return
+	}
+	if req.Model != "qwen3-embedding:0.6b" {
+		http.Error(w, "unknown model "+req.Model, http.StatusNotFound)
+		return
+	}
+
+	type item struct {
+		Embedding []float32 `json:"embedding"`
+		Index     int       `json:"index"`
+	}
+	resp := struct {
+		Data []item `json:"data"`
+	}{}
+	for i, text := range req.Input {
+		vec := make([]float32, environment.EmbeddingDims)
+		vec[len(text)%environment.EmbeddingDims] = 1
+		resp.Data = append(resp.Data, item{Index: i, Embedding: vec})
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// newApp boots the fully wired app and serves its HTTP surface. Ingestion
+// workers are not started; tests that need them call startIngestion.
+func newApp(t *testing.T) (*App, *httptest.Server) {
 	t.Helper()
 
 	app, cleanup, err := InitializeApp(context.Background())
@@ -57,6 +94,12 @@ func newServer(t *testing.T) *httptest.Server {
 
 	server := httptest.NewServer(app.Handler)
 	t.Cleanup(server.Close)
+	return app, server
+}
+
+func newServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	_, server := newApp(t)
 	return server
 }
 

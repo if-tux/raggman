@@ -74,7 +74,7 @@ func submit(ctx context.Context, q *sqlc.Queries, doc domain.Document, content [
 		if err := enqueueIngestion(ctx, q, row.ID); err != nil {
 			return domain.Document{}, false, err
 		}
-		return toDomain(row), true, nil
+		return FromRow(row), true, nil
 	case !errors.Is(err, pgx.ErrNoRows):
 		return domain.Document{}, false, fmt.Errorf("creating document: %w", err)
 	}
@@ -88,9 +88,9 @@ func submit(ctx context.Context, q *sqlc.Queries, doc domain.Document, content [
 	if err != nil {
 		return domain.Document{}, false, fmt.Errorf("loading existing document: %w", err)
 	}
-	existing := toDomain(row)
+	existing := FromRow(row)
 	if existing.Resubmit() {
-		if err := q.UpdateDocumentStatus(ctx, statusParams(existing)); err != nil {
+		if err := q.UpdateDocumentStatus(ctx, StatusParams(existing)); err != nil {
 			return domain.Document{}, false, fmt.Errorf("resubmitting document: %w", err)
 		}
 		if err := enqueueIngestion(ctx, q, existing.ID); err != nil {
@@ -121,7 +121,7 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (domain.Document, error
 	if err != nil {
 		return domain.Document{}, err
 	}
-	return toDomain(row), nil
+	return FromRow(row), nil
 }
 
 func (s *Service) List(ctx context.Context) ([]domain.Document, error) {
@@ -131,7 +131,7 @@ func (s *Service) List(ctx context.Context) ([]domain.Document, error) {
 	}
 	docs := make([]domain.Document, len(rows))
 	for i, row := range rows {
-		docs[i] = toDomain(row)
+		docs[i] = FromRow(row)
 	}
 	return docs, nil
 }
@@ -148,7 +148,8 @@ func (s *Service) Remove(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func toDomain(row sqlc.Document) domain.Document {
+// FromRow maps a stored Document row to the domain Document.
+func FromRow(row sqlc.Document) domain.Document {
 	return domain.Document{
 		ID:            row.ID,
 		FileHash:      row.FileHash,
@@ -159,7 +160,8 @@ func toDomain(row sqlc.Document) domain.Document {
 	}
 }
 
-func statusParams(d domain.Document) sqlc.UpdateDocumentStatusParams {
+// StatusParams builds the parameters to store a Document's status and failure reason.
+func StatusParams(d domain.Document) sqlc.UpdateDocumentStatusParams {
 	return sqlc.UpdateDocumentStatusParams{
 		ID:            d.ID,
 		Status:        string(d.Status),

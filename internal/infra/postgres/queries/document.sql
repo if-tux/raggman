@@ -34,3 +34,12 @@ WHERE id = $1;
 -- name: DeleteDocument :execrows
 DELETE FROM documents
 WHERE id = $1;
+
+-- name: GetDocumentContent :one
+SELECT content FROM document_files
+WHERE document_id = $1;
+
+-- name: SetDocumentTotalPages :exec
+UPDATE documents
+SET total_pages = $2
+WHERE id = $1;

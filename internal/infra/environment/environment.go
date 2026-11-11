@@ -34,6 +34,9 @@ type Environment struct {
 // (ADR-0001). docker-compose.yml's ollama-init pulls the same name.
 const EmbeddingModel = "qwen3-embedding:0.6b"
 
+// EmbeddingDims is EmbeddingModel's vector size, matching chunks.embedding.
+const EmbeddingDims = 1024
+
 // defaults also registers every key with viper: Unmarshal ignores environment
 // variables for keys viper doesn't know about, so every key needs an entry.
 var defaults = map[string]any{
