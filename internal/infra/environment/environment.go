@@ -17,19 +17,22 @@ import (
 //     slower first token, but far fewer invented facts. Only applies to local
 //     Ollama (no LLMAPIKey); cloud providers keep their own defaults.
 //   - OllamaHost: embeddings always run on local Ollama (ADR-0001, ADR-0004).
+//   - TracesExporter: "otlp" sends spans to OTLPEndpoint (Jaeger); "none"
+//     keeps them in process.
 type Environment struct {
-	Env           string  `mapstructure:"APP_ENV"`
-	LogLevel      string  `mapstructure:"LOG_LEVEL"`
-	HTTPAddr      string  `mapstructure:"HTTP_ADDR"`
-	DatabaseURL   string  `mapstructure:"DATABASE_URL"`
-	LLMBaseURL    string  `mapstructure:"LLM_BASE_URL"`
-	LLMAPIKey     string  `mapstructure:"LLM_API_KEY"`
-	LLMModel      string  `mapstructure:"LLM_MODEL"`
-	OllamaHost    string  `mapstructure:"OLLAMA_HOST"`
-	OTLPEndpoint  string  `mapstructure:"OTEL_EXPORTER_OTLP_ENDPOINT"`
-	MinSimilarity float64 `mapstructure:"MIN_SIMILARITY"`
-	TopK          int     `mapstructure:"TOP_K"`
-	LLMThinking   bool    `mapstructure:"LLM_THINKING"`
+	Env            string  `mapstructure:"APP_ENV"`
+	LogLevel       string  `mapstructure:"LOG_LEVEL"`
+	HTTPAddr       string  `mapstructure:"HTTP_ADDR"`
+	DatabaseURL    string  `mapstructure:"DATABASE_URL"`
+	LLMBaseURL     string  `mapstructure:"LLM_BASE_URL"`
+	LLMAPIKey      string  `mapstructure:"LLM_API_KEY"`
+	LLMModel       string  `mapstructure:"LLM_MODEL"`
+	OllamaHost     string  `mapstructure:"OLLAMA_HOST"`
+	OTLPEndpoint   string  `mapstructure:"OTEL_EXPORTER_OTLP_ENDPOINT"`
+	TracesExporter string  `mapstructure:"OTEL_TRACES_EXPORTER"`
+	MinSimilarity  float64 `mapstructure:"MIN_SIMILARITY"`
+	TopK           int     `mapstructure:"TOP_K"`
+	LLMThinking    bool    `mapstructure:"LLM_THINKING"`
 }
 
 // EmbeddingModel embeds every Chunk in the Corpus. It is deliberately not
@@ -54,6 +57,7 @@ var defaults = map[string]any{
 	"LLM_THINKING":                true,
 	"OLLAMA_HOST":                 "http://localhost:11434",
 	"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
+	"OTEL_TRACES_EXPORTER":        "otlp",
 	"MIN_SIMILARITY":              0.3,
 	"TOP_K":                       5,
 }

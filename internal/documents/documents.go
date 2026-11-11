@@ -9,6 +9,7 @@ import (
 
 	"github.com/BrunoPereiradosSantos/raggman/internal/domain"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/sqlc"
+	"github.com/BrunoPereiradosSantos/raggman/internal/infra/telemetry"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -105,7 +106,8 @@ func enqueueIngestion(ctx context.Context, q *sqlc.Queries, documentID uuid.UUID
 		ID:       uuid.New(),
 		TargetID: documentID,
 		JobType:  JobTypeIngestion,
-		Payload:  []byte("{}"),
+		// The Ingestion continues the submitting request's trace.
+		Payload: telemetry.Carrier(ctx),
 	})
 	if err != nil {
 		return fmt.Errorf("enqueuing ingestion: %w", err)

@@ -13,12 +13,14 @@ import (
 
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/environment"
 	"github.com/BrunoPereiradosSantos/raggman/internal/ingestion"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 // shutdownTimeout bounds how long in-flight requests get after SIGTERM.
 const shutdownTimeout = 30 * time.Second
 
 type App struct {
+	Tracing   *sdktrace.TracerProvider
 	Env       *environment.Environment
 	Handler   http.Handler
 	Ingestion *ingestion.Workers

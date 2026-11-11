@@ -11,6 +11,7 @@ import (
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/environment"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/logger"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/postgres"
+	"github.com/BrunoPereiradosSantos/raggman/internal/infra/telemetry"
 	"github.com/BrunoPereiradosSantos/raggman/internal/ingestion"
 	"github.com/google/wire"
 )
@@ -21,6 +22,7 @@ func InitializeApp(ctx context.Context) (*App, func(), error) {
 		wire.FieldsOf(new(*environment.Environment), "DatabaseURL"),
 		logger.InitAndProvide,
 		postgres.NewDatabasePool,
+		telemetry.NewTracerProvider,
 		documents.NewService,
 		answering.New,
 		api.NewHandler,

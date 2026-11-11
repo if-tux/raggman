@@ -19,11 +19,15 @@ import (
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/llm"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/pdftext"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/sqlc"
+	"github.com/BrunoPereiradosSantos/raggman/internal/infra/telemetry"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pgvector/pgvector-go"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ponytail: fixed backoff after each failed attempt; make it configurable if
@@ -49,6 +53,7 @@ const (
 // Workers run Ingestion Jobs. ShutdownGrace is how long an in-flight Job may
 // finish after shutdown starts; tests lower it.
 type Workers struct {
+	tracer        trace.Tracer
 	pool          *pgxpool.Pool
 	queries       *sqlc.Queries
 	embedder      *llm.Client
@@ -56,8 +61,9 @@ type Workers struct {
 	ShutdownGrace time.Duration
 }
 
-func New(pool *pgxpool.Pool, env *environment.Environment, logger *slog.Logger) *Workers {
+func New(pool *pgxpool.Pool, env *environment.Environment, logger *slog.Logger, tp *sdktrace.TracerProvider) *Workers {
 	return &Workers{
+		tracer:   tp.Tracer("raggman/ingestion"),
 		pool:     pool,
 		queries:  sqlc.New(pool),
 		embedder: llm.New(env.EmbeddingsBaseURL(), ""),
@@ -103,10 +109,20 @@ func (w *Workers) loop(ctx context.Context, workerID string) {
 
 func (w *Workers) ingestJob(ctx context.Context, workerID string, job sqlc.JobQueue) {
 	log := w.logger.With("job_id", job.ID, "document_id", job.TargetID, "worker", workerID)
-	log.InfoContext(ctx, "Ingestion started")
+
+	// The Ingestion continues the trace of the request that submitted the
+	// Document; each attempt is its own span in that trace.
+	spanCtx, span := w.tracer.Start(telemetry.FromCarrier(context.WithoutCancel(ctx), job.Payload), "ingestion",
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			attribute.String("document.id", job.TargetID.String()),
+			attribute.Int("job.attempt", int(job.Attempts)+1),
+		))
+	defer span.End()
+	log.InfoContext(spanCtx, "Ingestion started")
 
 	// The Job outlives ctx by ShutdownGrace, so shutdown does not abort it at once.
-	jobCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	jobCtx, cancel := context.WithCancel(spanCtx)
 	defer cancel()
 	grace := w.ShutdownGrace
 	stopGrace := context.AfterFunc(ctx, func() { time.AfterFunc(grace, cancel) })
@@ -115,18 +131,19 @@ func (w *Workers) ingestJob(ctx context.Context, workerID string, job sqlc.JobQu
 	stopHeartbeat := w.heartbeat(jobCtx, job.ID, workerID)
 	err := w.ingest(jobCtx, job)
 	stopHeartbeat()
+	telemetry.RecordError(jobCtx, span, err)
 
 	// Settle the Job even when jobCtx is cancelled, but never hang on it.
-	settleCtx, cancelSettle := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
+	settleCtx, cancelSettle := context.WithTimeout(spanCtx, settleTimeout)
 	defer cancelSettle()
 
 	switch {
 	case err == nil:
-		log.InfoContext(ctx, "Ingestion finished")
+		log.InfoContext(spanCtx, "Ingestion finished")
 	case errors.Is(err, errLostLock):
-		log.WarnContext(ctx, "Ingestion Job was reclaimed by another worker; dropping this attempt")
+		log.WarnContext(spanCtx, "Ingestion Job was reclaimed by another worker; dropping this attempt")
 	case jobCtx.Err() != nil:
-		log.InfoContext(ctx, "Shutdown grace ran out; releasing Ingestion Job")
+		log.InfoContext(spanCtx, "Shutdown grace ran out; releasing Ingestion Job")
 		w.settle(settleCtx, log, "releasing", func() (int64, error) {
 			return w.queries.ReleaseJob(settleCtx, sqlc.ReleaseJobParams{ID: job.ID, LockedBy: job.LockedBy})
 		})
@@ -274,20 +291,29 @@ func (w *Workers) ingest(ctx context.Context, job sqlc.JobQueue) error {
 	if err != nil {
 		return fmt.Errorf("loading document content: %w", err)
 	}
-	pages, err := pdftext.Pages(ctx, content)
+	pages, err := telemetry.Span(ctx, w.tracer, "ingestion.extract", func(ctx context.Context) ([]string, error) {
+		return pdftext.Pages(ctx, content)
+	})
 	if err != nil {
 		return err
 	}
-	chunks := domain.ChunkPages(pages)
+	chunks, _ := telemetry.Span(ctx, w.tracer, "ingestion.chunk", func(context.Context) ([]domain.Chunk, error) {
+		return domain.ChunkPages(pages), nil
+	})
 	if len(chunks) == 0 {
 		return errNoText
 	}
-	vectors, err := w.embed(ctx, chunks)
+	vectors, err := telemetry.Span(ctx, w.tracer, "ingestion.embed", func(ctx context.Context) ([][]float32, error) {
+		return w.embed(ctx, chunks)
+	})
 	if err != nil {
 		return err
 	}
 
-	return w.store(ctx, job, doc, len(pages), chunks, vectors)
+	_, err = telemetry.Span(ctx, w.tracer, "ingestion.store", func(ctx context.Context) (struct{}, error) {
+		return struct{}{}, w.store(ctx, job, doc, len(pages), chunks, vectors)
+	})
+	return err
 }
 
 func (w *Workers) embed(ctx context.Context, chunks []domain.Chunk) ([][]float32, error) {

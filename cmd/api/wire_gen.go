@@ -14,6 +14,7 @@ import (
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/environment"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/logger"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/postgres"
+	"github.com/BrunoPereiradosSantos/raggman/internal/infra/telemetry"
 	"github.com/BrunoPereiradosSantos/raggman/internal/ingestion"
 )
 
@@ -24,22 +25,29 @@ func InitializeApp(ctx context.Context) (*App, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	string2 := environmentEnvironment.DatabaseURL
 	slogLogger := logger.InitAndProvide(environmentEnvironment)
-	pool, cleanup, err := postgres.NewDatabasePool(ctx, string2, slogLogger)
+	tracerProvider, cleanup, err := telemetry.NewTracerProvider(ctx, environmentEnvironment, slogLogger)
 	if err != nil {
 		return nil, nil, err
 	}
+	string2 := environmentEnvironment.DatabaseURL
+	pool, cleanup2, err := postgres.NewDatabasePool(ctx, string2, slogLogger)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
 	service := documents.NewService(pool)
-	answeringService := answering.New(pool, environmentEnvironment)
-	handler := api.NewHandler(pool, service, answeringService)
-	workers := ingestion.New(pool, environmentEnvironment, slogLogger)
+	answeringService := answering.New(pool, environmentEnvironment, tracerProvider)
+	handler := api.NewHandler(pool, service, answeringService, tracerProvider)
+	workers := ingestion.New(pool, environmentEnvironment, slogLogger, tracerProvider)
 	app := &App{
+		Tracing:   tracerProvider,
 		Env:       environmentEnvironment,
 		Handler:   handler,
 		Ingestion: workers,
 	}
 	return app, func() {
+		cleanup2()
 		cleanup()
 	}, nil
 }
