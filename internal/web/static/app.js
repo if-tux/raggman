@@ -1,19 +1,34 @@
 // Raggman UI: plain JavaScript against the HTTP API. Text from the server is
-// always set with textContent, never parsed as HTML.
+// always set with textContent, never parsed as HTML. The UI speaks Portuguese;
+// the API speaks English, so server messages are translated here.
 "use strict";
 
 const $ = (id) => document.getElementById(id);
 const POLL_MS = 1500;
 const MAX_DOCUMENT_BYTES = 50 * 1024 * 1024;
 const IN_PROGRESS = new Set(["PENDING", "INGESTING"]);
-const STATE_LABELS = { PENDING: "Pending", INGESTING: "Ingesting", READY: "Ready", FAILED: "Failed" };
+const STATE_LABELS = { PENDING: "Pendente", INGESTING: "Em ingestão", READY: "Pronto", FAILED: "Falhou" };
+
+// Fixed English texts from the API, shown in Portuguese.
+const NOT_FOUND_ANSWER = "I could not find anything about this in the Corpus.";
+const STATUS_MESSAGES = {
+  413: "o PDF passa de 50 MB",
+  415: "só aceitamos arquivos PDF",
+  502: "não foi possível gerar a Resposta",
+};
 
 async function errorMessage(resp) {
+  if (STATUS_MESSAGES[resp.status]) return STATUS_MESSAGES[resp.status];
   try {
     return (await resp.json()).error || resp.statusText;
   } catch {
     return resp.statusText;
   }
+}
+
+function failureReason(reason) {
+  if (reason === "no extractable text") return "sem texto extraível (PDF escaneado?)";
+  return reason.replace(/^Ingestion failed after (\d+) attempts: /, "a Ingestion falhou após $1 tentativas: ");
 }
 
 // --- Documents ---
@@ -31,7 +46,7 @@ async function loadDocuments() {
     docs = await resp.json();
   } catch (err) {
     if (seq !== loadSeq) return;
-    $("corpus-count").textContent = `Could not load Documents: ${err.message}`;
+    $("corpus-count").textContent = `Não foi possível carregar os Documentos: ${err.message}`;
     schedulePoll(POLL_MS * 4);
     return;
   }
@@ -39,7 +54,7 @@ async function loadDocuments() {
 
   render(docs);
   const ready = docs.filter((d) => d.status === "READY").length;
-  $("corpus-count").textContent = `${docs.length} Document(s), ${ready} Ready`;
+  $("corpus-count").textContent = `${docs.length} Documento(s), ${ready} pronto(s)`;
   if (docs.some((d) => IN_PROGRESS.has(d.status))) schedulePoll(POLL_MS);
 }
 
@@ -86,7 +101,7 @@ function documentRow(doc) {
 function updateState(row, doc) {
   const cell = row.querySelector(".state");
   const label = STATE_LABELS[doc.status] || doc.status;
-  const reason = doc.failure_reason || "";
+  const reason = doc.failure_reason ? failureReason(doc.failure_reason) : "";
   if (cell.dataset.label === label && cell.dataset.reason === reason) return;
   cell.dataset.label = label;
   cell.dataset.reason = reason;
@@ -108,14 +123,14 @@ function removeButton(doc) {
     button.textContent = text;
     button.setAttribute("aria-label", aria);
   };
-  show("Remove", `Remove ${doc.filename}`);
+  show("Remover", `Remover ${doc.filename}`);
 
   button.addEventListener("click", async () => {
     if (!armed) {
-      show("Sure?", `Activate again to remove ${doc.filename}`);
+      show("Certeza?", `Ative de novo para remover ${doc.filename}`);
       armed = setTimeout(() => {
         armed = undefined;
-        show("Remove", `Remove ${doc.filename}`);
+        show("Remover", `Remover ${doc.filename}`);
       }, 8000);
       return;
     }
@@ -127,13 +142,13 @@ function removeButton(doc) {
     try {
       const resp = await fetch(`/documents/${doc.id}`, { method: "DELETE" });
       message = resp.ok || resp.status === 404
-        ? `Removed ${doc.filename}.`
-        : `Could not remove ${doc.filename}: ${await errorMessage(resp)}`;
+        ? `${doc.filename} foi removido.`
+        : `Não foi possível remover ${doc.filename}: ${await errorMessage(resp)}`;
     } catch (err) {
-      message = `Could not remove ${doc.filename}: ${err.message}`;
+      message = `Não foi possível remover ${doc.filename}: ${err.message}`;
       button.disabled = false;
       armed = undefined;
-      show("Remove", `Remove ${doc.filename}`);
+      show("Remover", `Remover ${doc.filename}`);
     }
     $("submit-status").textContent = message;
     await loadDocuments();
@@ -151,27 +166,27 @@ $("submit-form").addEventListener("submit", async (event) => {
 
   const status = $("submit-status");
   if (pdf.size > MAX_DOCUMENT_BYTES) {
-    status.textContent = `${pdf.name} was not added: PDFs can be at most 50 MB.`;
+    status.textContent = `${pdf.name} não foi adicionado: o PDF passa de 50 MB.`;
     return;
   }
-  status.textContent = `Sending ${pdf.name}…`;
+  status.textContent = `Enviando ${pdf.name}…`;
   const form = new FormData();
   form.append("file", pdf);
 
   try {
     const resp = await fetch("/documents", { method: "POST", body: form });
     if (!resp.ok) {
-      status.textContent = `${pdf.name} was not added: ${await errorMessage(resp)}`;
+      status.textContent = `${pdf.name} não foi adicionado: ${await errorMessage(resp)}`;
       return;
     }
     const doc = await resp.json();
     status.textContent = resp.status === 201
-      ? `Added ${doc.filename}; Ingestion has started.`
-      : `${doc.filename} is already in Raggman (${STATE_LABELS[doc.status] || doc.status}).`;
+      ? `${doc.filename} foi adicionado; a Ingestion começou.`
+      : `${doc.filename} já está no Raggman (${STATE_LABELS[doc.status] || doc.status}).`;
     input.value = "";
     loadDocuments();
   } catch (err) {
-    status.textContent = `${pdf.name} was not added: ${err.message}`;
+    status.textContent = `${pdf.name} não foi adicionado: ${err.message}`;
   }
 });
 
@@ -200,11 +215,22 @@ async function* readEvents(reader) {
   }
 }
 
+// renderAnswer shows **bold** from the model as bold, built from DOM nodes so
+// the text is still never parsed as HTML.
+function renderAnswer(el, text) {
+  el.replaceChildren(...text.split(/(\*\*[^*\n]+\*\*)/).map((part) => {
+    if (!/^\*\*[^*\n]+\*\*$/.test(part)) return document.createTextNode(part);
+    const bold = document.createElement("strong");
+    bold.textContent = part.slice(2, -2);
+    return bold;
+  }));
+}
+
 function showCitations(citations) {
   const items = citations.map((c) => {
     const item = document.createElement("li");
     item.value = c.marker;
-    item.textContent = `${c.filename}, page ${c.page}`;
+    item.textContent = `${c.filename}, página ${c.page}`;
     return item;
   });
   $("citations").replaceChildren(...items);
@@ -248,16 +274,21 @@ $("ask-form").addEventListener("submit", async (event) => {
         thinking.hidden = true;
         answer.textContent += payload.text;
       } else if (name === "citations") {
+        if (answer.textContent === NOT_FOUND_ANSWER) {
+          answer.textContent = "Não encontrei nada sobre isso no Corpus.";
+        } else {
+          renderAnswer(answer, answer.textContent);
+        }
         showCitations(payload.citations);
         finished = true;
       } else if (name === "error") {
-        note.textContent = payload.error;
+        note.textContent = "Não foi possível gerar a Resposta.";
         finished = true;
       }
     }
-    if (!finished) note.textContent = "The Answer was cut off before it finished.";
+    if (!finished) note.textContent = "A Resposta foi interrompida antes do fim.";
   } catch (err) {
-    note.textContent = `The Answer was interrupted: ${err.message}`;
+    note.textContent = `A Resposta foi interrompida: ${err.message}`;
   } finally {
     reader?.cancel().catch(() => {});
     thinking.hidden = true;
@@ -277,7 +308,7 @@ $("question").addEventListener("keydown", (event) => {
 // --- Taskbar clock ---
 
 function tick() {
-  $("clock").textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  $("clock").textContent = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 }
 
 tick();
