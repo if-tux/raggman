@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Raggman</title>
+  <link rel="stylesheet" href="/vendor/98css/98.css">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <h1 class="visually-hidden">Raggman</h1>
+  <main class="desktop">
+    <section class="window documents-window" aria-labelledby="documents-title">
+      <div class="title-bar">
+        <h2 class="title-bar-text" id="documents-title">Documents</h2>
+      </div>
+      <div class="window-body">
+        <form id="submit-form">
+          <div class="field-row">
+            <label for="pdf">PDF (up to 50 MB)</label>
+            <input type="file" id="pdf" name="file" accept="application/pdf,.pdf" required>
+            <button type="submit">Add to Corpus</button>
+          </div>
+        </form>
+        <p id="submit-status" role="status"></p>
+        <div class="sunken-panel table-panel">
+          <table>
+            <thead>
+              <tr><th scope="col">Document</th><th scope="col">State</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr>
+            </thead>
+            <tbody id="documents"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="status-bar">
+        <p class="status-bar-field" id="corpus-count">Loading…</p>
+      </div>
+    </section>
+
+    <section class="window ask-window" aria-labelledby="ask-title">
+      <div class="title-bar">
+        <h2 class="title-bar-text" id="ask-title">Ask Raggman</h2>
+      </div>
+      <div class="window-body">
+        <form id="ask-form">
+          <div class="field-row-stacked">
+            <label for="question">Question</label>
+            <textarea id="question" rows="3" maxlength="2000" required></textarea>
+          </div>
+          <div class="field-row">
+            <button type="submit" id="ask-button">Ask</button>
+            <span id="thinking" hidden>Thinking<span class="dots" aria-hidden="true">...</span></span>
+          </div>
+        </form>
+        <div class="sunken-panel answer-panel" id="answer-panel" role="region" aria-label="Answer" aria-live="polite" aria-busy="false">
+          <p id="answer"></p>
+        </div>
+        <p id="answer-note" class="answer-note" role="status"></p>
+        <fieldset id="citations-box" hidden>
+          <legend>Citations</legend>
+          <ol id="citations"></ol>
+        </fieldset>
+      </div>
+    </section>
+  </main>
+
+  <footer class="taskbar">
+    <span class="taskbar-title">Raggman</span>
+    <span class="taskbar-clock" id="clock"></span>
+  </footer>
+</body>
+</html>
