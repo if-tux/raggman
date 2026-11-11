@@ -11,8 +11,11 @@ import (
 	"github.com/BrunoPereiradosSantos/raggman/internal/answering"
 	"github.com/BrunoPereiradosSantos/raggman/internal/documents"
 	"github.com/BrunoPereiradosSantos/raggman/internal/domain"
+	"github.com/BrunoPereiradosSantos/raggman/internal/infra/telemetry"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 type handler struct {
@@ -21,10 +24,9 @@ type handler struct {
 	answering *answering.Service
 }
 
-func NewHandler(pool *pgxpool.Pool, docs *documents.Service, answers *answering.Service) http.Handler {
+func NewHandler(pool *pgxpool.Pool, docs *documents.Service, answers *answering.Service, tp *sdktrace.TracerProvider) http.Handler {
 	h := &handler{pool: pool, documents: docs, answering: answers}
 	mux := http.NewServeMux()
-
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("POST /documents", h.submitDocument)
 	mux.HandleFunc("GET /documents", h.listDocuments)
@@ -32,7 +34,14 @@ func NewHandler(pool *pgxpool.Pool, docs *documents.Service, answers *answering.
 	mux.HandleFunc("DELETE /documents/{id}", h.removeDocument)
 	mux.HandleFunc("POST /questions", h.askQuestion)
 
-	return mux
+	// otelhttp names each server span after the matched route ("POST
+	// /documents"), and continues a caller's trace from its traceparent.
+	return otelhttp.NewHandler(mux, "http",
+		otelhttp.WithTracerProvider(tp),
+		otelhttp.WithPropagators(telemetry.Propagator),
+		// The compose healthcheck polls every 5s; its spans would bury the rest.
+		otelhttp.WithFilter(func(r *http.Request) bool { return r.URL.Path != "/healthz" }),
+	)
 }
 
 func (h *handler) healthz(w http.ResponseWriter, r *http.Request) {

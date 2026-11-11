@@ -43,6 +43,8 @@ func TestMain(m *testing.M) {
 	llm := httptest.NewServer(http.HandlerFunc(stubLLM))
 	os.Setenv("OLLAMA_HOST", llm.URL)
 	os.Setenv("LLM_BASE_URL", llm.URL+"/v1")
+	// Tests read spans from an in-memory exporter, not a Jaeger.
+	os.Setenv("OTEL_TRACES_EXPORTER", "none")
 
 	code := m.Run()
 	llm.Close()
