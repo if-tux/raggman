@@ -12,6 +12,7 @@ import (
 	"github.com/BrunoPereiradosSantos/raggman/internal/documents"
 	"github.com/BrunoPereiradosSantos/raggman/internal/domain"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/telemetry"
+	"github.com/BrunoPereiradosSantos/raggman/internal/web"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -33,6 +34,7 @@ func NewHandler(pool *pgxpool.Pool, docs *documents.Service, answers *answering.
 	mux.HandleFunc("GET /documents/{id}", h.getDocument)
 	mux.HandleFunc("DELETE /documents/{id}", h.removeDocument)
 	mux.HandleFunc("POST /questions", h.askQuestion)
+	mux.Handle("GET /", web.Handler())
 
 	// otelhttp names each server span after the matched route ("POST
 	// /documents"), and continues a caller's trace from its traceparent.

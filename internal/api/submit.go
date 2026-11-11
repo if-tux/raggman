@@ -18,7 +18,7 @@ func (h *handler) submitDocument(w http.ResponseWriter, r *http.Request) {
 	var tooLarge *http.MaxBytesError
 	switch {
 	case errors.As(err, &tooLarge) || errors.Is(err, errTooLarge):
-		writeError(w, http.StatusRequestEntityTooLarge, "file exceeds the 50 MB limit")
+		writeError(w, http.StatusRequestEntityTooLarge, "the PDF exceeds the 50 MB limit")
 		return
 	case errors.Is(err, errMissingFile), errors.Is(err, errMissingFilename):
 		writeError(w, http.StatusBadRequest, err.Error())
