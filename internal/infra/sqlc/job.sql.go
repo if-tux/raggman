@@ -23,7 +23,7 @@ type CompleteJobParams struct {
 }
 
 // Only the worker holding the lock may complete a Job; 0 rows means the
-// Job was reclaimed by another worker.
+// Job was reclaimed by another worker. Also used to drop aborted Jobs.
 func (q *Queries) CompleteJob(ctx context.Context, arg CompleteJobParams) (int64, error) {
 	result, err := q.db.Exec(ctx, completeJob, arg.ID, arg.LockedBy)
 	if err != nil {
@@ -107,16 +107,81 @@ func (q *Queries) DequeueJob(ctx context.Context, lockedBy pgtype.Text) (JobQueu
 	return i, err
 }
 
-const failedJob = `-- name: FailedJob :exec
+const failJob = `-- name: FailJob :execrows
 UPDATE job_queue
 SET status = 'FAILED',
-    attempts = attempts + 1
-WHERE id = $1
+    attempts = attempts + 1,
+    locked_at = NULL,
+    locked_by = NULL,
+    heartbeat_at = NULL
+WHERE id = $1 AND locked_by = $2
 `
 
-func (q *Queries) FailedJob(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.Exec(ctx, failedJob, id)
-	return err
+type FailJobParams struct {
+	ID       uuid.UUID   `json:"id"`
+	LockedBy pgtype.Text `json:"locked_by"`
+}
+
+// Counts the last failed attempt; the Job is not claimed again.
+func (q *Queries) FailJob(ctx context.Context, arg FailJobParams) (int64, error) {
+	result, err := q.db.Exec(ctx, failJob, arg.ID, arg.LockedBy)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const releaseJob = `-- name: ReleaseJob :execrows
+UPDATE job_queue
+SET status = 'QUEUED',
+    run_after = NOW(),
+    locked_at = NULL,
+    locked_by = NULL,
+    heartbeat_at = NULL
+WHERE id = $1 AND locked_by = $2
+`
+
+type ReleaseJobParams struct {
+	ID       uuid.UUID   `json:"id"`
+	LockedBy pgtype.Text `json:"locked_by"`
+}
+
+// Hands an unfinished Job back to the queue without counting an attempt.
+func (q *Queries) ReleaseJob(ctx context.Context, arg ReleaseJobParams) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseJob, arg.ID, arg.LockedBy)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const retryJob = `-- name: RetryJob :execrows
+
+UPDATE job_queue
+SET status = 'QUEUED',
+    attempts = attempts + 1,
+    run_after = NOW() + make_interval(secs => $1::float8),
+    locked_at = NULL,
+    locked_by = NULL,
+    heartbeat_at = NULL
+WHERE id = $2 AND locked_by = $3
+`
+
+type RetryJobParams struct {
+	BackoffSeconds float64     `json:"backoff_seconds"`
+	ID             uuid.UUID   `json:"id"`
+	LockedBy       pgtype.Text `json:"locked_by"`
+}
+
+// The queries below act only for the worker holding the Job's lock; 0 rows
+// means the Job was reclaimed by another worker.
+// Counts a failed attempt and re-queues the Job after a backoff.
+func (q *Queries) RetryJob(ctx context.Context, arg RetryJobParams) (int64, error) {
+	result, err := q.db.Exec(ctx, retryJob, arg.BackoffSeconds, arg.ID, arg.LockedBy)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const updateJobHeartBeat = `-- name: UpdateJobHeartBeat :exec

@@ -27,23 +27,32 @@ import (
 	"github.com/pgvector/pgvector-go"
 )
 
+// ponytail: fixed backoff after each failed attempt; make it configurable if
+// real outages last longer. Its length is maxAttempts-1.
+var backoffs = []time.Duration{10 * time.Second, 40 * time.Second}
+
 const (
 	// ponytail: fixed worker count; local inference is the bottleneck, so more
 	// workers only queue up at Ollama. Make it configurable for cloud setups.
 	workerCount  = 2
 	pollInterval = time.Second
-	// shutdownGrace is how long an in-flight Job may keep running after
-	// shutdown starts; below the app's 30s shutdown timeout so workers stop first.
-	shutdownGrace     = 25 * time.Second
+	// defaultShutdownGrace is how long an in-flight Job may keep running after
+	// shutdown starts. Grace plus settleTimeout stays under the app's 30s
+	// shutdown timeout, so a Job is released before the pool closes.
+	defaultShutdownGrace = 20 * time.Second
+	settleTimeout        = 5 * time.Second
+	// maxAttempts is how many times Ingestion is tried before the Document Fails.
+	maxAttempts       = 3
 	heartbeatInterval = 30 * time.Second
 	embedBatchSize    = 32
 )
 
 type Workers struct {
-	pool     *pgxpool.Pool
-	queries  *sqlc.Queries
-	embedder *llm.Client
-	logger   *slog.Logger
+	pool          *pgxpool.Pool
+	queries       *sqlc.Queries
+	embedder      *llm.Client
+	logger        *slog.Logger
+	ShutdownGrace time.Duration
 }
 
 func New(pool *pgxpool.Pool, env *environment.Environment, logger *slog.Logger) *Workers {
@@ -52,12 +61,14 @@ func New(pool *pgxpool.Pool, env *environment.Environment, logger *slog.Logger) 
 		queries:  sqlc.New(pool),
 		embedder: llm.New(strings.TrimSuffix(env.OllamaHost, "/")+"/v1", ""),
 		logger:   logger,
+
+		ShutdownGrace: defaultShutdownGrace,
 	}
 }
 
 // Run works through Ingestion Jobs until ctx is cancelled. Workers then stop
-// claiming Jobs, give an in-flight Job up to shutdownGrace to finish, and Run
-// returns once every worker has stopped.
+// claiming Jobs, give an in-flight Job up to ShutdownGrace to finish (then
+// hand it back to the queue), and Run returns once every worker has stopped.
 func (w *Workers) Run(ctx context.Context) {
 	host, _ := os.Hostname()
 	var wg sync.WaitGroup
@@ -93,28 +104,121 @@ func (w *Workers) ingestJob(ctx context.Context, workerID string, job sqlc.JobQu
 	log := w.logger.With("job_id", job.ID, "document_id", job.TargetID, "worker", workerID)
 	log.InfoContext(ctx, "Ingestion started")
 
-	// The Job outlives ctx by shutdownGrace, so shutdown does not abort it at once.
+	// The Job outlives ctx by ShutdownGrace, so shutdown does not abort it at once.
 	jobCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
-	stopGrace := context.AfterFunc(ctx, func() { time.AfterFunc(shutdownGrace, cancel) })
+	grace := w.ShutdownGrace
+	stopGrace := context.AfterFunc(ctx, func() { time.AfterFunc(grace, cancel) })
 	defer stopGrace()
 
 	stopHeartbeat := w.heartbeat(jobCtx, job.ID, workerID)
 	err := w.ingest(jobCtx, job)
 	stopHeartbeat()
 
-	if err == nil {
+	// Settle the Job even when jobCtx is cancelled, but never hang on it.
+	settleCtx, cancelSettle := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
+	defer cancelSettle()
+
+	switch {
+	case err == nil:
 		log.InfoContext(ctx, "Ingestion finished")
+	case errors.Is(err, errLostLock):
+		log.WarnContext(ctx, "Ingestion Job was reclaimed by another worker; dropping this attempt")
+	case jobCtx.Err() != nil:
+		log.InfoContext(ctx, "Shutdown grace ran out; releasing Ingestion Job")
+		w.settle(settleCtx, log, "releasing", func() (int64, error) {
+			return w.queries.ReleaseJob(settleCtx, sqlc.ReleaseJobParams{ID: job.ID, LockedBy: job.LockedBy})
+		})
+	default:
+		w.fail(settleCtx, log, job, err)
+	}
+}
+
+// errNoText is permanent: retrying cannot make text appear.
+var errNoText = errors.New("no extractable text")
+
+// fail decides what a failed attempt means: abort if the Document is gone,
+// retry with backoff, or mark the Document Failed after the last attempt.
+func (w *Workers) fail(ctx context.Context, log *slog.Logger, job sqlc.JobQueue, cause error) {
+	row, err := w.queries.GetDocument(ctx, job.TargetID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		log.InfoContext(ctx, "Document was removed; aborting Ingestion")
+		w.settle(ctx, log, "aborting", func() (int64, error) {
+			return w.queries.CompleteJob(ctx, sqlc.CompleteJobParams{ID: job.ID, LockedBy: job.LockedBy})
+		})
 		return
 	}
-	if jobCtx.Err() != nil {
-		// Grace ran out during shutdown: the lock goes stale and the Job is
-		// reclaimed later.
-		return
+	if err != nil {
+		log.ErrorContext(ctx, "Loading Document after a failed Ingestion", "error", err)
+		return // the lock goes stale and the Job is reclaimed later
 	}
-	log.ErrorContext(ctx, "Ingestion failed", "error", err)
-	if err := w.queries.FailedJob(jobCtx, job.ID); err != nil {
-		log.ErrorContext(ctx, "Marking Ingestion Job failed", "error", err)
+
+	// ponytail: an attempt counts only when it fails cleanly; a crash mid-Job is
+	// reclaimed without counting, so a PDF that crashes the process retries
+	// forever. Count reclaims too if that ever happens.
+	attempt := job.Attempts + 1
+	reason := errNoText.Error()
+	switch {
+	case errors.Is(cause, errNoText):
+		// Permanent: fail now.
+	case attempt < maxAttempts:
+		backoff := backoffs[attempt-1]
+		log.WarnContext(ctx, "Ingestion attempt failed; retrying", "attempt", attempt, "backoff", backoff.String(), "error", cause)
+		w.settle(ctx, log, "re-queuing", func() (int64, error) {
+			return w.queries.RetryJob(ctx, sqlc.RetryJobParams{ID: job.ID, LockedBy: job.LockedBy, BackoffSeconds: backoff.Seconds()})
+		})
+		return
+	default:
+		reason = fmt.Sprintf("Ingestion failed after %d attempts: %v", attempt, cause)
+	}
+	log.ErrorContext(ctx, "Ingestion failed; marking Document Failed", "attempt", attempt, "reason", reason)
+	if err := w.markFailed(ctx, job, documents.FromRow(row), reason); err != nil {
+		log.ErrorContext(ctx, "Marking Document Failed", "error", err)
+	}
+}
+
+// markFailed ends the Job and Fails the Document in one transaction. The Job
+// row stays as FAILED for inspection.
+// ponytail: FAILED Job rows are never cleaned up; purge old ones if the
+// table grows.
+func (w *Workers) markFailed(ctx context.Context, job sqlc.JobQueue, doc domain.Document, reason string) error {
+	if doc.Status == domain.StatusPending {
+		// An earlier attempt failed before Ingestion was recorded as started.
+		if err := doc.StartIngestion(); err != nil {
+			return err
+		}
+	}
+	if err := doc.MarkFailed(reason); err != nil {
+		return err
+	}
+	tx, err := w.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := w.queries.WithTx(tx)
+
+	n, err := q.FailJob(ctx, sqlc.FailJobParams{ID: job.ID, LockedBy: job.LockedBy})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return errLostLock
+	}
+	if err := q.UpdateDocumentStatus(ctx, documents.StatusParams(doc)); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// settle runs a lock-guarded Job update and logs when it did not apply.
+func (w *Workers) settle(ctx context.Context, log *slog.Logger, action string, update func() (int64, error)) {
+	n, err := update()
+	switch {
+	case err != nil:
+		log.ErrorContext(ctx, "Settling Ingestion Job failed", "action", action, "error", err)
+	case n == 0:
+		log.WarnContext(ctx, "Ingestion Job was reclaimed by another worker", "action", action)
 	}
 }
 
@@ -175,7 +279,7 @@ func (w *Workers) ingest(ctx context.Context, job sqlc.JobQueue) error {
 	}
 	chunks := domain.ChunkPages(pages)
 	if len(chunks) == 0 {
-		return errors.New("no extractable text")
+		return errNoText
 	}
 	vectors, err := w.embed(ctx, chunks)
 	if err != nil {
