@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/BrunoPereiradosSantos/raggman/internal/domain"
@@ -133,13 +134,26 @@ type reportedBlock struct {
 	Source      string `json:"source"`
 	Translation string `json:"translation"`
 	Reason      string `json:"reason,omitempty"`
-	Warning     string `json:"warning,omitempty"`
 	Position    int    `json:"position"`
 	Chapter     int    `json:"chapter"`
 }
 
+// groupedWarning is one warning with every Block it was raised for. The same
+// word tends to be reported Block after Block ("France" in every chapter set
+// there), so the report has one line per warning, not one per Block.
+type groupedWarning struct {
+	Warning string `json:"warning"`
+	// Positions are the Blocks the warning was raised for, in reading order.
+	Positions []int `json:"positions"`
+	// Example is the first Block the warning was raised for.
+	Example reportedBlock `json:"example"`
+	// Blocks is how many Blocks that is.
+	Blocks int `json:"blocks"`
+}
+
 // getReport lists what the user should check in a Translation: the Flagged
-// Blocks, each with the reason, and the warnings, one entry per warning.
+// Blocks, each with the reason, and the warnings, grouped so that each one
+// appears once, the most frequent first.
 func (h *handler) getReport(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r, "translation")
 	if !ok {
@@ -150,9 +164,10 @@ func (h *handler) getReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	report := struct {
-		Flagged  []reportedBlock `json:"flagged"`
-		Warnings []reportedBlock `json:"warnings"`
-	}{Flagged: []reportedBlock{}, Warnings: []reportedBlock{}}
+		Flagged  []reportedBlock  `json:"flagged"`
+		Warnings []groupedWarning `json:"warnings"`
+	}{Flagged: []reportedBlock{}, Warnings: []groupedWarning{}}
+	group := map[string]int{} // warning text → index in report.Warnings
 	for _, b := range blocks {
 		entry := reportedBlock{Position: b.Position, Chapter: b.Chapter, Source: b.Source, Translation: b.Translation}
 		if b.FlagReason != "" {
@@ -161,11 +176,18 @@ func (h *handler) getReport(w http.ResponseWriter, r *http.Request) {
 			report.Flagged = append(report.Flagged, flagged)
 		}
 		for _, warning := range b.Warnings {
-			warned := entry
-			warned.Warning = warning
-			report.Warnings = append(report.Warnings, warned)
+			at, seen := group[warning]
+			if !seen {
+				at = len(report.Warnings)
+				group[warning] = at
+				report.Warnings = append(report.Warnings, groupedWarning{Warning: warning, Example: entry})
+			}
+			report.Warnings[at].Positions = append(report.Warnings[at].Positions, b.Position)
+			report.Warnings[at].Blocks++
 		}
 	}
+	// Most Blocks first; among equals, the one met first in the Book.
+	slices.SortStableFunc(report.Warnings, func(a, b groupedWarning) int { return b.Blocks - a.Blocks })
 	writeJSON(w, http.StatusOK, report)
 }
 

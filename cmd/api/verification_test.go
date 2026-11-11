@@ -16,14 +16,20 @@ type reportedJSON struct {
 	Source      string `json:"source"`
 	Translation string `json:"translation"`
 	Reason      string `json:"reason"`
-	Warning     string `json:"warning"`
 	Position    int    `json:"position"`
 	Chapter     int    `json:"chapter"`
 }
 
+type warningJSON struct {
+	Warning   string       `json:"warning"`
+	Positions []int        `json:"positions"`
+	Example   reportedJSON `json:"example"`
+	Blocks    int          `json:"blocks"`
+}
+
 type reportJSON struct {
 	Flagged  []reportedJSON `json:"flagged"`
-	Warnings []reportedJSON `json:"warnings"`
+	Warnings []warningJSON  `json:"warnings"`
 }
 
 func getReport(t *testing.T, server *httptest.Server, translationID string) reportJSON {
@@ -315,31 +321,46 @@ func TestResumedTranslationStillKeepsFlaggedBlocksOutOfTheContext(t *testing.T) 
 	}
 }
 
-func TestWarningsAreReportedWithoutRejectingTheBlock(t *testing.T) {
+func TestWarningsAreReportedOncePerWordWithoutRejectingAnyBlock(t *testing.T) {
 	app, server := newApp(t)
 	mark := rand.Text()
+	// The stub leaves the glimmerstone untranslated in the first Block and
+	// renames Annabel in the last three.
 	skipped := "Mara kept the glimmerstone in Port Varen, skip-term-always " + mark + "."
-	renamed := "Then she met Annabel at the quay " + mark + "."
-	tr := locked(t, server, app, epubtest.Book("T", "en", `<p>`+skipped+`</p><p>`+renamed+`</p>`), "formal")
+	met := "Then she met Annabel at the quay " + mark + "."
+	said := "It was late, and Annabel said nothing " + mark + "."
+	both := "By morning Annabel and Tobias were gone " + mark + "."
+	tr := locked(t, server, app, epubtest.Book("T", "en",
+		`<p>`+skipped+`</p><p>`+met+`</p>`, `<p>`+said+`</p><p>`+both+`</p>`), "formal")
 	startIngestion(t, app)
 	waitForTranslation(t, server, tr.ID, "COMPLETE")
 
-	// Neither Block was asked again: a warning never rejects.
-	if n := len(translationRequestsWith(mark)); n != 1 {
-		t.Fatalf("the Window was sent %d times, want 1", n)
+	// No Block was asked again: a warning never rejects.
+	for _, source := range []string{skipped, said} {
+		if n := len(translationRequestsWith(source)); n != 1 {
+			t.Fatalf("a Window was sent %d times, want 1", n)
+		}
 	}
 	if p := getProgress(t, server, tr.ID); p.BlocksFlagged != 0 || p.BlocksTranslated != p.BlocksTotal {
 		t.Fatalf("progress = %+v, want everything translated and nothing Flagged", p)
 	}
+
+	// One line per warning, the most frequent first, each with the Blocks it
+	// was raised for and the first of them as an example.
 	report := getReport(t, server, tr.ID)
-	want := []reportedJSON{
-		{Position: 2, Chapter: 1, Source: skipped, Translation: "pt:" + strings.ReplaceAll(skipped, "Port Varen", "Porto Varen"),
-			Warning: `the Term "glimmerstone" was not rendered as "pedra-lume"`},
-		{Position: 3, Chapter: 1, Source: renamed, Translation: "pt:" + strings.ReplaceAll(renamed, "Annabel", "Ana"),
-			Warning: `"Annabel" is not in the translation; if it is a name, add it to the Termbase`},
+	if len(report.Flagged) != 0 || len(report.Warnings) != 2 {
+		t.Fatalf("report = %+v, want no Flagged Block and two warnings", report)
 	}
-	if len(report.Flagged) != 0 || !slices.Equal(report.Warnings, want) {
-		t.Fatalf("report =\n  %+v\nwant no Flagged Block and the warnings\n  %+v", report, want)
+	annabel, term := report.Warnings[0], report.Warnings[1]
+	wantExample := reportedJSON{Position: 4, Chapter: 1, Source: met, Translation: "pt:" + strings.ReplaceAll(met, "Annabel", "Ana")}
+	if annabel.Warning != `"Annabel" is not in the translation; if it is a name, add it to the Termbase` ||
+		annabel.Blocks != 3 || !slices.Equal(annabel.Positions, []int{4, 5, 6}) || annabel.Example != wantExample {
+		t.Errorf("first warning =\n  %+v\nwant Annabel, in Blocks 4, 5 and 6, with this example\n  %+v", annabel, wantExample)
+	}
+	wantExample = reportedJSON{Position: 3, Chapter: 1, Source: skipped, Translation: "pt:" + strings.ReplaceAll(skipped, "Port Varen", "Porto Varen")}
+	if term.Warning != `the Term "glimmerstone" was not rendered as "pedra-lume"` ||
+		term.Blocks != 1 || !slices.Equal(term.Positions, []int{3}) || term.Example != wantExample {
+		t.Errorf("second warning =\n  %+v\nwant the Term, in Block 3, with this example\n  %+v", term, wantExample)
 	}
 }
 
