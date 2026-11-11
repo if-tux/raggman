@@ -1,0 +1,11 @@
+# NVIDIA GPU for Ollama (Linux only; Docker on macOS has no GPU access).
+# Usage: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
