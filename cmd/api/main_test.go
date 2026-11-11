@@ -1,18 +1,25 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/json"
+	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
-// startPostgres runs a throwaway pgvector Postgres and points DATABASE_URL at it.
-func startPostgres(t *testing.T) {
-	t.Helper()
+// TestMain runs one throwaway pgvector Postgres for the whole package. Tests
+// stay independent by uploading unique content instead of resetting the DB.
+func TestMain(m *testing.M) {
 	ctx := context.Background()
 
 	container, err := tcpostgres.Run(ctx, "pgvector/pgvector:pg16",
@@ -21,20 +28,26 @@ func startPostgres(t *testing.T) {
 		tcpostgres.WithPassword("raggman"),
 		tcpostgres.BasicWaitStrategies(),
 	)
-	testcontainers.CleanupContainer(t, container)
 	if err != nil {
-		t.Fatalf("start postgres: %v", err)
+		fmt.Fprintln(os.Stderr, "start postgres:", err)
+		os.Exit(1)
 	}
 
 	url, err := container.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
-		t.Fatalf("connection string: %v", err)
+		fmt.Fprintln(os.Stderr, "connection string:", err)
+		os.Exit(1)
 	}
-	t.Setenv("DATABASE_URL", url)
+	os.Setenv("DATABASE_URL", url)
+
+	code := m.Run()
+	_ = testcontainers.TerminateContainer(container)
+	os.Exit(code)
 }
 
-func TestAppBootsAndReportsHealthy(t *testing.T) {
-	startPostgres(t)
+// newServer boots the fully wired app and serves it over HTTP.
+func newServer(t *testing.T) *httptest.Server {
+	t.Helper()
 
 	app, cleanup, err := InitializeApp(context.Background())
 	if err != nil {
@@ -44,14 +57,89 @@ func TestAppBootsAndReportsHealthy(t *testing.T) {
 
 	server := httptest.NewServer(app.Handler)
 	t.Cleanup(server.Close)
+	return server
+}
 
-	resp, err := http.Get(server.URL + "/healthz")
+// uniquePDF returns content that passes the PDF check and never repeats.
+func uniquePDF(t *testing.T) []byte {
+	t.Helper()
+	return append([]byte("%PDF-1.7\n"), []byte(rand.Text())...)
+}
+
+type documentJSON struct {
+	ID            string `json:"id"`
+	Filename      string `json:"filename"`
+	Status        string `json:"status"`
+	FailureReason string `json:"failure_reason"`
+}
+
+func submitPDF(t *testing.T, server *httptest.Server, filename string, content []byte) *http.Response {
+	t.Helper()
+
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	part, err := form.CreateFormFile("file", filename)
 	if err != nil {
-		t.Fatalf("GET /healthz: %v", err)
+		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	_, _ = part.Write(content)
+	_ = form.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /healthz = %d, want 200", resp.StatusCode)
+	resp, err := http.Post(server.URL+"/documents", form.FormDataContentType(), &body)
+	if err != nil {
+		t.Fatalf("POST /documents: %v", err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
+
+func decode[T any](t *testing.T, r io.Reader) T {
+	t.Helper()
+	var v T
+	if err := json.NewDecoder(r).Decode(&v); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return v
+}
+
+func get(t *testing.T, url string) *http.Response {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
+
+func wantStatus(t *testing.T, resp *http.Response, want int) {
+	t.Helper()
+	if resp.StatusCode != want {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("%s %s = %d, want %d (body: %s)", resp.Request.Method, resp.Request.URL.Path, resp.StatusCode, want, body)
+	}
+}
+
+func TestAppBootsAndReportsHealthy(t *testing.T) {
+	server := newServer(t)
+
+	wantStatus(t, get(t, server.URL+"/healthz"), http.StatusOK)
+}
+
+func TestSubmittingCreatesPendingDocument(t *testing.T) {
+	server := newServer(t)
+
+	resp := submitPDF(t, server, "report.pdf", uniquePDF(t))
+	wantStatus(t, resp, http.StatusCreated)
+	created := decode[documentJSON](t, resp.Body)
+
+	if created.Status != "PENDING" || created.Filename != "report.pdf" {
+		t.Fatalf("created = %+v, want PENDING report.pdf", created)
+	}
+
+	resp = get(t, server.URL+"/documents/"+created.ID)
+	wantStatus(t, resp, http.StatusOK)
+	if got := decode[documentJSON](t, resp.Body); got != created {
+		t.Fatalf("GET = %+v, want %+v", got, created)
 	}
 }

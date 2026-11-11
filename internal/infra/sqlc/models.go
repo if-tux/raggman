@@ -22,10 +22,15 @@ type Document struct {
 	ID            uuid.UUID          `json:"id"`
 	FileHash      string             `json:"file_hash"`
 	Filename      string             `json:"filename"`
-	TotalPages    int32              `json:"total_pages"`
+	TotalPages    pgtype.Int4        `json:"total_pages"`
 	Status        string             `json:"status"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	FailureReason pgtype.Text        `json:"failure_reason"`
+}
+
+type DocumentFile struct {
+	DocumentID uuid.UUID `json:"document_id"`
+	Content    []byte    `json:"content"`
 }
 
 type JobQueue struct {
