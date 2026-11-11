@@ -19,4 +19,7 @@ pre-commit:
     go-vet:
       run: go vet ./...
     struct-alignment:
-      run: fieldalignment -fix ./...
+      # Report only: -fix silently deletes struct field comments when it
+      # reorders fields. Reorder by hand, keeping the comments. sqlc output is
+      # generated, so it is skipped.
+      run: fieldalignment $(go list ./... | grep -v /internal/infra/sqlc)
