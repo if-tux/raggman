@@ -19,15 +19,20 @@ type Environment struct {
 	LLMAPIKey  string `mapstructure:"LLM_API_KEY"`
 	LLMModel   string `mapstructure:"LLM_MODEL"`
 
-	// Embeddings always run on local Ollama (ADR-0001, ADR-0004).
-	OllamaHost     string `mapstructure:"OLLAMA_HOST"`
-	EmbeddingModel string `mapstructure:"EMBEDDING_MODEL"`
+	// Embeddings always run on local Ollama (ADR-0004), with EmbeddingModel.
+	OllamaHost string `mapstructure:"OLLAMA_HOST"`
 
 	OTLPEndpoint string `mapstructure:"OTEL_EXPORTER_OTLP_ENDPOINT"`
 
 	MinSimilarity float64 `mapstructure:"MIN_SIMILARITY"`
 	TopK          int     `mapstructure:"TOP_K"`
 }
+
+// EmbeddingModel embeds every Chunk in the Corpus. It is deliberately not
+// configurable: mixing models breaks similarity, and the schema's vector(1024)
+// is sized for it. Changing it means a migration and re-ingesting everything
+// (ADR-0001). docker-compose.yml's ollama-init pulls the same name.
+const EmbeddingModel = "qwen3-embedding:0.6b"
 
 // defaults also registers every key with viper: Unmarshal ignores environment
 // variables for keys viper doesn't know about, so every key needs an entry.
@@ -40,7 +45,6 @@ var defaults = map[string]any{
 	"LLM_API_KEY":                 "",
 	"LLM_MODEL":                   "qwen3:8b",
 	"OLLAMA_HOST":                 "http://localhost:11434",
-	"EMBEDDING_MODEL":             "qwen3-embedding:0.6b",
 	"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
 	"MIN_SIMILARITY":              0.5,
 	"TOP_K":                       5,

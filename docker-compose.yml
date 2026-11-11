@@ -14,7 +14,6 @@ services:
       # Embeddings always stay on Ollama. On macOS, for GPU, set OLLAMA_HOST=http://host.docker.internal:11434
       # and LLM_BASE_URL=http://host.docker.internal:11434/v1.
       OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-qwen3-embedding:0.6b}
       TOP_K: ${TOP_K:-5}
       MIN_SIMILARITY: ${MIN_SIMILARITY:-0.5}
     ports:
@@ -91,12 +90,12 @@ services:
       OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-qwen3:8b}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-qwen3-embedding:0.6b}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         set -e
-        ollama pull "$$EMBEDDING_MODEL"
+        # Fixed by ADR-0001; must match environment.EmbeddingModel.
+        ollama pull qwen3-embedding:0.6b
         if [ -z "$$LLM_API_KEY" ]; then
           ollama pull "$$LLM_MODEL"
         else
