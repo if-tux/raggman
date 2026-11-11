@@ -11,11 +11,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strings"
 	"testing"
-	"time"
 
-	"github.com/BrunoPereiradosSantos/raggman/internal/infra/environment"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
@@ -43,58 +40,14 @@ func TestMain(m *testing.M) {
 	}
 	os.Setenv("DATABASE_URL", url)
 
-	llm := httptest.NewServer(http.HandlerFunc(stubEmbeddings))
+	llm := httptest.NewServer(http.HandlerFunc(stubLLM))
 	os.Setenv("OLLAMA_HOST", llm.URL)
+	os.Setenv("LLM_BASE_URL", llm.URL+"/v1")
 
 	code := m.Run()
 	llm.Close()
 	_ = testcontainers.TerminateContainer(container)
 	os.Exit(code)
-}
-
-// stubEmbeddings stands in for Ollama's OpenAI-compatible /v1/embeddings:
-// a deterministic 1024-dim vector per input, and only for the fixed model.
-func stubEmbeddings(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Model string   `json:"model"`
-		Input []string `json:"input"`
-	}
-	if r.URL.Path != "/v1/embeddings" || json.NewDecoder(r.Body).Decode(&req) != nil {
-		http.Error(w, "unexpected request", http.StatusBadRequest)
-		return
-	}
-	if req.Model != "qwen3-embedding:0.6b" {
-		http.Error(w, "unknown model "+req.Model, http.StatusNotFound)
-		return
-	}
-	// Markers in the text let tests simulate an outage or a slow Ollama.
-	for _, text := range req.Input {
-		if strings.Contains(text, "embedding-outage") {
-			http.Error(w, "model unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		if strings.Contains(text, "slow-embedding") {
-			select {
-			case <-r.Context().Done():
-				return
-			case <-time.After(3 * time.Second):
-			}
-		}
-	}
-
-	type item struct {
-		Embedding []float32 `json:"embedding"`
-		Index     int       `json:"index"`
-	}
-	resp := struct {
-		Data []item `json:"data"`
-	}{}
-	for i, text := range req.Input {
-		vec := make([]float32, environment.EmbeddingDims)
-		vec[len(text)%environment.EmbeddingDims] = 1
-		resp.Data = append(resp.Data, item{Index: i, Embedding: vec})
-	}
-	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // newApp boots the fully wired app and serves its HTTP surface. Ingestion

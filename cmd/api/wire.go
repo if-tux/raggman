@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 
+	"github.com/BrunoPereiradosSantos/raggman/internal/answering"
 	"github.com/BrunoPereiradosSantos/raggman/internal/api"
 	"github.com/BrunoPereiradosSantos/raggman/internal/documents"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/environment"
@@ -21,6 +22,7 @@ func InitializeApp(ctx context.Context) (*App, func(), error) {
 		logger.InitAndProvide,
 		postgres.NewDatabasePool,
 		documents.NewService,
+		answering.New,
 		api.NewHandler,
 		ingestion.New,
 		wire.Struct(new(App), "*"),

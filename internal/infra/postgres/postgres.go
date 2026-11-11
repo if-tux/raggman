@@ -30,6 +30,10 @@ func NewDatabasePool(ctx context.Context, databaseURL string, logger *slog.Logge
 		return nil, nil, fmt.Errorf("error parsing database config: %w", err)
 	}
 
+	// Keep HNSW scanning past rows that the Corpus filter drops (pgvector 0.8+;
+	// older versions ignore the setting). See the SearchCorpus query.
+	config.ConnConfig.RuntimeParams["hnsw.iterative_scan"] = "relaxed_order"
+
 	config.MaxConns = 15
 	config.MinConns = 2
 	config.MaxConnLifetime = 1 * time.Hour

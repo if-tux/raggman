@@ -57,46 +57,60 @@ func (q *Queries) DeleteChunksByDocument(ctx context.Context, documentID uuid.UU
 	return err
 }
 
-const searchChunks = `-- name: SearchChunks :many
-SELECT 
-    id, 
-    document_id,
-    page_number,
-    content,
-    (1 -(embedding <=> $1))::float8 AS similarity_score
-FROM chunks
-ORDER By embedding <=> $1
-LIMIT $2
+const searchCorpus = `-- name: SearchCorpus :many
+WITH nearest AS MATERIALIZED (
+    SELECT
+        c.id,
+        c.document_id,
+        c.page_number,
+        c.content,
+        d.filename,
+        c.embedding <=> $1 AS distance
+    FROM chunks c
+    JOIN documents d ON d.id = c.document_id
+    WHERE d.status = 'READY'
+    ORDER BY c.embedding <=> $1
+    LIMIT $2
+)
+SELECT id, document_id, page_number, content, filename, (1 - distance)::float8 AS similarity
+FROM nearest
+ORDER BY distance
 `
 
-type SearchChunksParams struct {
+type SearchCorpusParams struct {
 	Embedding pgvector_go.Vector `json:"embedding"`
-	Limit     int32              `json:"limit"`
+	TopK      int32              `json:"top_k"`
 }
 
-type SearchChunksRow struct {
-	ID              uuid.UUID `json:"id"`
-	DocumentID      uuid.UUID `json:"document_id"`
-	PageNumber      int32     `json:"page_number"`
-	Content         string    `json:"content"`
-	SimilarityScore float64   `json:"similarity_score"`
+type SearchCorpusRow struct {
+	ID         uuid.UUID `json:"id"`
+	DocumentID uuid.UUID `json:"document_id"`
+	PageNumber int32     `json:"page_number"`
+	Content    string    `json:"content"`
+	Filename   string    `json:"filename"`
+	Similarity float64   `json:"similarity"`
 }
 
-func (q *Queries) SearchChunks(ctx context.Context, arg SearchChunksParams) ([]SearchChunksRow, error) {
-	rows, err := q.db.Query(ctx, searchChunks, arg.Embedding, arg.Limit)
+// Nearest Chunks by cosine similarity, from Ready Documents only (the Corpus).
+// The status filter applies after the HNSW scan; connections enable
+// hnsw.iterative_scan so the scan keeps going until top_k rows pass it. That
+// mode may return rows slightly out of order, hence the outer ORDER BY.
+func (q *Queries) SearchCorpus(ctx context.Context, arg SearchCorpusParams) ([]SearchCorpusRow, error) {
+	rows, err := q.db.Query(ctx, searchCorpus, arg.Embedding, arg.TopK)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []SearchChunksRow
+	var items []SearchCorpusRow
 	for rows.Next() {
-		var i SearchChunksRow
+		var i SearchCorpusRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.DocumentID,
 			&i.PageNumber,
 			&i.Content,
-			&i.SimilarityScore,
+			&i.Filename,
+			&i.Similarity,
 		); err != nil {
 			return nil, err
 		}

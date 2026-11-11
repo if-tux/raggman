@@ -3,12 +3,15 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -16,15 +19,34 @@ type Client struct {
 	http    *http.Client
 	baseURL string
 	apiKey  string
+	// SkipReasoning asks the model not to think before answering. Set it only
+	// for local Ollama: many cloud providers reject reasoning_effort.
+	SkipReasoning bool
 }
 
 // New targets baseURL (ending in /v1); apiKey may be empty for local Ollama.
+//
+// There is no overall timeout, since a thinking model can stream for minutes;
+// callers bound requests with their context. Only a server that never starts
+// responding is cut off.
 func New(baseURL, apiKey string) *Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// ponytail: generous because a cold local model loads before replying.
+	transport.ResponseHeaderTimeout = 2 * time.Minute
 	return &Client{
 		baseURL: baseURL,
 		apiKey:  apiKey,
-		http:    &http.Client{Timeout: 5 * time.Minute},
+		http:    &http.Client{Transport: transport},
 	}
+}
+
+// Stream receives a streamed chat completion as it arrives.
+type Stream struct {
+	// Token gets each piece of generated text.
+	Token func(string) error
+	// Thinking, if set, is called once when the model starts reasoning
+	// before it answers. Reasoning text itself is never passed on.
+	Thinking func() error
 }
 
 // Embed returns one vector per input, in input order.
@@ -53,14 +75,98 @@ func (c *Client) Embed(ctx context.Context, model string, inputs []string) ([][]
 	return vectors, nil
 }
 
-func (c *Client) post(ctx context.Context, path string, body, out any) error {
-	payload, err := json.Marshal(body)
+// Message is one chat turn.
+type Message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// ChatStream runs a streamed chat completion.
+func (c *Client) ChatStream(ctx context.Context, model string, messages []Message, stream Stream) error {
+	body := map[string]any{"model": model, "messages": messages, "stream": true}
+	if c.SkipReasoning {
+		body["reasoning_effort"] = "none"
+	}
+	resp, err := c.send(ctx, "/chat/completions", body)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(payload))
+	defer resp.Body.Close()
+
+	thinking := false
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		data, ok := strings.CutPrefix(scanner.Text(), "data:")
+		if !ok {
+			continue
+		}
+		data = strings.TrimSpace(data)
+		if data == "[DONE]" {
+			return nil
+		}
+		var chunk struct {
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+					// Ollama sends reasoning; vLLM and DeepSeek reasoning_content.
+					Reasoning        string `json:"reasoning"`
+					ReasoningContent string `json:"reasoning_content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			return fmt.Errorf("chat stream: decoding chunk: %w", err)
+		}
+		if chunk.Error != nil {
+			return fmt.Errorf("chat stream: %s", chunk.Error.Message)
+		}
+		for _, choice := range chunk.Choices {
+			reasoning := choice.Delta.Reasoning + choice.Delta.ReasoningContent
+			if reasoning != "" && !thinking && stream.Thinking != nil {
+				thinking = true
+				if err := stream.Thinking(); err != nil {
+					return err
+				}
+			}
+			if choice.Delta.Content == "" {
+				continue
+			}
+			if err := stream.Token(choice.Delta.Content); err != nil {
+				return err
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("chat stream: %w", err)
+	}
+	return errors.New("chat stream ended without [DONE]")
+}
+
+func (c *Client) post(ctx context.Context, path string, body, out any) error {
+	resp, err := c.send(ctx, path, body)
 	if err != nil {
 		return err
+	}
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("POST %s: decoding response: %w", path, err)
+	}
+	return nil
+}
+
+// send POSTs body as JSON and returns the response if it is 200 OK.
+func (c *Client) send(ctx context.Context, path string, body any) (*http.Response, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
@@ -69,16 +175,12 @@ func (c *Client) post(ctx context.Context, path string, body, out any) error {
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("POST %s: %w", path, err)
+		return nil, fmt.Errorf("POST %s: %w", path, err)
 	}
-	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("POST %s: %s: %s", path, resp.Status, bytes.TrimSpace(msg))
+		return nil, fmt.Errorf("POST %s: %s: %s", path, resp.Status, bytes.TrimSpace(msg))
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("POST %s: decoding response: %w", path, err)
-	}
-	return nil
+	return resp, nil
 }
