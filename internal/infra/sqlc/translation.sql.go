@@ -54,6 +54,24 @@ type CreateTermsParams struct {
 	Occurrences int32     `json:"occurrences"`
 }
 
+const createTranslatedBlock = `-- name: CreateTranslatedBlock :exec
+INSERT INTO translated_blocks (translation_id, position, translation)
+VALUES ($1, $2, $3)
+ON CONFLICT (translation_id, position) DO NOTHING
+`
+
+type CreateTranslatedBlockParams struct {
+	TranslationID uuid.UUID `json:"translation_id"`
+	Position      int32     `json:"position"`
+	Translation   string    `json:"translation"`
+}
+
+// A Block already translated by an earlier attempt keeps its translation.
+func (q *Queries) CreateTranslatedBlock(ctx context.Context, arg CreateTranslatedBlockParams) error {
+	_, err := q.db.Exec(ctx, createTranslatedBlock, arg.TranslationID, arg.Position, arg.Translation)
+	return err
+}
+
 const createTranslation = `-- name: CreateTranslation :one
 INSERT INTO translations (id, book_id, termbase_id, language, level, status)
 VALUES ($1, $2, $3, $4, $5, $6)
@@ -187,6 +205,65 @@ func (q *Queries) GetTranslation(ctx context.Context, id uuid.UUID) (Translation
 	return i, err
 }
 
+const getTranslationProgress = `-- name: GetTranslationProgress :one
+SELECT
+    (SELECT count(*) FROM translated_blocks tb WHERE tb.translation_id = t.id)::int AS translated,
+    b.total_blocks AS total
+FROM translations t
+JOIN books b ON b.id = t.book_id
+WHERE t.id = $1
+`
+
+type GetTranslationProgressRow struct {
+	Translated int32 `json:"translated"`
+	Total      int32 `json:"total"`
+}
+
+func (q *Queries) GetTranslationProgress(ctx context.Context, id uuid.UUID) (GetTranslationProgressRow, error) {
+	row := q.db.QueryRow(ctx, getTranslationProgress, id)
+	var i GetTranslationProgressRow
+	err := row.Scan(&i.Translated, &i.Total)
+	return i, err
+}
+
+const listBlocks = `-- name: ListBlocks :many
+SELECT position, chapter, kind, source FROM blocks
+WHERE book_id = $1
+ORDER BY position
+`
+
+type ListBlocksRow struct {
+	Position int32  `json:"position"`
+	Chapter  int32  `json:"chapter"`
+	Kind     string `json:"kind"`
+	Source   string `json:"source"`
+}
+
+func (q *Queries) ListBlocks(ctx context.Context, bookID uuid.UUID) ([]ListBlocksRow, error) {
+	rows, err := q.db.Query(ctx, listBlocks, bookID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListBlocksRow
+	for rows.Next() {
+		var i ListBlocksRow
+		if err := rows.Scan(
+			&i.Position,
+			&i.Chapter,
+			&i.Kind,
+			&i.Source,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTerms = `-- name: ListTerms :many
 SELECT termbase_id, source, rendering, kind, occurrences FROM terms
 WHERE termbase_id = $1
@@ -241,6 +318,37 @@ func (q *Queries) ListTextBlocks(ctx context.Context, bookID uuid.UUID) ([]ListT
 	for rows.Next() {
 		var i ListTextBlocksRow
 		if err := rows.Scan(&i.Chapter, &i.Source); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTranslatedBlocks = `-- name: ListTranslatedBlocks :many
+SELECT position, translation FROM translated_blocks
+WHERE translation_id = $1
+ORDER BY position
+`
+
+type ListTranslatedBlocksRow struct {
+	Position    int32  `json:"position"`
+	Translation string `json:"translation"`
+}
+
+func (q *Queries) ListTranslatedBlocks(ctx context.Context, translationID uuid.UUID) ([]ListTranslatedBlocksRow, error) {
+	rows, err := q.db.Query(ctx, listTranslatedBlocks, translationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListTranslatedBlocksRow
+	for rows.Next() {
+		var i ListTranslatedBlocksRow
+		if err := rows.Scan(&i.Position, &i.Translation); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -377,4 +485,33 @@ type UpdateTermbaseStatusParams struct {
 func (q *Queries) UpdateTermbaseStatus(ctx context.Context, arg UpdateTermbaseStatusParams) error {
 	_, err := q.db.Exec(ctx, updateTermbaseStatus, arg.ID, arg.Status, arg.FailureReason)
 	return err
+}
+
+const updateTranslationStatus = `-- name: UpdateTranslationStatus :execrows
+UPDATE translations
+SET status = $1,
+    failure_reason = $2
+WHERE id = $3 AND status = $4
+`
+
+type UpdateTranslationStatusParams struct {
+	ToStatus      string      `json:"to_status"`
+	FailureReason pgtype.Text `json:"failure_reason"`
+	ID            uuid.UUID   `json:"id"`
+	FromStatus    string      `json:"from_status"`
+}
+
+// Moves one Translation from one status to another; 0 rows means it was no
+// longer in the expected status.
+func (q *Queries) UpdateTranslationStatus(ctx context.Context, arg UpdateTranslationStatusParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateTranslationStatus,
+		arg.ToStatus,
+		arg.FailureReason,
+		arg.ID,
+		arg.FromStatus,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

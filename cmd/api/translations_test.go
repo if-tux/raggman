@@ -132,13 +132,21 @@ func termbaseID(t *testing.T, translationID string) string {
 	return id
 }
 
-// reviewedTranslation takes a Translation of a fresh Book up to review.
+// reviewedTranslation takes a Translation of a fresh Book up to review, then
+// stops the workers, so Jobs enqueued afterwards stay in the queue.
 func reviewedTranslation(t *testing.T, server *httptest.Server, app *App) translationJSON {
 	t.Helper()
+	return reviewed(t, server, app, storyBook(t, ""), "formal")
+}
+
+func reviewed(t *testing.T, server *httptest.Server, app *App, content []byte, level string) translationJSON {
+	t.Helper()
 	clearQueue(t)
-	startIngestion(t, app)
-	tr := submitAndTranslate(t, server, storyBook(t, ""), "formal")
-	return waitForTranslation(t, server, tr.ID, "IN_REVIEW")
+	stop := startIngestion(t, app)
+	tr := submitAndTranslate(t, server, content, level)
+	tr = waitForTranslation(t, server, tr.ID, "IN_REVIEW")
+	stop()
+	return tr
 }
 
 var storyTerms = []termJSON{

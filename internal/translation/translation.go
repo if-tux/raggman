@@ -153,6 +153,21 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (domain.Translation, er
 	return fromRow(row), nil
 }
 
+// Progress is how far a Translation is: Blocks translated out of the Book's total.
+type Progress struct{ Translated, Total int }
+
+// Progress reports how many of the Book's Blocks a Translation has finished.
+func (s *Service) Progress(ctx context.Context, id uuid.UUID) (Progress, error) {
+	row, err := s.queries.GetTranslationProgress(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Progress{}, ErrNotFound
+	}
+	if err != nil {
+		return Progress{}, err
+	}
+	return Progress{Translated: int(row.Translated), Total: int(row.Total)}, nil
+}
+
 // List returns every Translation, oldest first.
 func (s *Service) List(ctx context.Context) ([]domain.Translation, error) {
 	rows, err := s.queries.ListTranslations(ctx)

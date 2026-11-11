@@ -100,17 +100,27 @@ func (c *Client) ChatStream(ctx context.Context, model string, messages []Messag
 // reject the JSON mode otherwise. The reply is still streamed underneath, so
 // a slow model is not cut off for staying silent while it generates.
 func (c *Client) ChatJSON(ctx context.Context, model string, messages []Message) (string, error) {
-	var reply strings.Builder
-	body := map[string]any{
+	return c.collect(ctx, map[string]any{
 		"model":           model,
 		"messages":        messages,
 		"response_format": map[string]string{"type": "json_object"},
-	}
+	})
+}
+
+// collect runs a chat completion and returns the whole reply.
+func (c *Client) collect(ctx context.Context, body map[string]any) (string, error) {
+	var reply strings.Builder
 	err := c.chat(ctx, body, Stream{Token: func(token string) error {
 		reply.WriteString(token)
 		return nil
 	}})
 	return reply.String(), err
+}
+
+// ChatText runs a chat completion at the given temperature and returns the
+// whole reply. Like ChatJSON, it streams underneath.
+func (c *Client) ChatText(ctx context.Context, model string, messages []Message, temperature float64) (string, error) {
+	return c.collect(ctx, map[string]any{"model": model, "messages": messages, "temperature": temperature})
 }
 
 func (c *Client) chat(ctx context.Context, body map[string]any, stream Stream) error {

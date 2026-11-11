@@ -138,6 +138,27 @@ func (q *Queries) FailJob(ctx context.Context, arg FailJobParams) (int64, error)
 	return result.RowsAffected(), nil
 }
 
+const holdJob = `-- name: HoldJob :one
+SELECT id FROM job_queue
+WHERE id = $1 AND locked_by = $2
+FOR UPDATE
+`
+
+type HoldJobParams struct {
+	ID       uuid.UUID   `json:"id"`
+	LockedBy pgtype.Text `json:"locked_by"`
+}
+
+// Locks the Job row for a transaction, only for the worker holding its lock;
+// no row means the Job was reclaimed by another worker. Lets work that
+// commits in steps make sure, at each step, that it still owns the Job.
+func (q *Queries) HoldJob(ctx context.Context, arg HoldJobParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, holdJob, arg.ID, arg.LockedBy)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const releaseJob = `-- name: ReleaseJob :execrows
 UPDATE job_queue
 SET status = 'QUEUED',

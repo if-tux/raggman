@@ -69,3 +69,35 @@ RETURNING id;
 SELECT chapter, source FROM blocks
 WHERE book_id = $1 AND kind = 'text'
 ORDER BY position;
+
+-- name: ListBlocks :many
+SELECT position, chapter, kind, source FROM blocks
+WHERE book_id = $1
+ORDER BY position;
+
+-- name: ListTranslatedBlocks :many
+SELECT position, translation FROM translated_blocks
+WHERE translation_id = $1
+ORDER BY position;
+
+-- name: CreateTranslatedBlock :exec
+-- A Block already translated by an earlier attempt keeps its translation.
+INSERT INTO translated_blocks (translation_id, position, translation)
+VALUES ($1, $2, $3)
+ON CONFLICT (translation_id, position) DO NOTHING;
+
+-- name: GetTranslationProgress :one
+SELECT
+    (SELECT count(*) FROM translated_blocks tb WHERE tb.translation_id = t.id)::int AS translated,
+    b.total_blocks AS total
+FROM translations t
+JOIN books b ON b.id = t.book_id
+WHERE t.id = $1;
+
+-- name: UpdateTranslationStatus :execrows
+-- Moves one Translation from one status to another; 0 rows means it was no
+-- longer in the expected status.
+UPDATE translations
+SET status = sqlc.arg(to_status),
+    failure_reason = sqlc.narg(failure_reason)
+WHERE id = sqlc.arg(id) AND status = sqlc.arg(from_status);

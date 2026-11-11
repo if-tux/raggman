@@ -114,7 +114,16 @@ func (h *handler) getTranslation(w http.ResponseWriter, r *http.Request) {
 	if h.translationError(w, r, err) {
 		return
 	}
-	writeJSON(w, http.StatusOK, toTranslationResponse(t))
+	progress, err := h.translations.Progress(r.Context(), id)
+	if h.translationError(w, r, err) {
+		return
+	}
+	// Progress is reported here only; lists of Translations leave it out.
+	writeJSON(w, http.StatusOK, struct {
+		translationResponse
+		BlocksTranslated int `json:"blocks_translated"`
+		BlocksTotal      int `json:"blocks_total"`
+	}{toTranslationResponse(t), progress.Translated, progress.Total})
 }
 
 func (h *handler) getTermbase(w http.ResponseWriter, r *http.Request) {
