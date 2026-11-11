@@ -71,6 +71,14 @@ _Avoid_: batch, chunk, context
 The fixed list of Terms for one Book and one target language, reviewed by the user and locked before any Block is translated.
 _Avoid_: glossary, dictionary, vocabulary
 
+**In Review**:
+The state of a Termbase whose Terms have been extracted and wait for the user to edit and approve them; a Translation waiting on it is In Review too.
+_Avoid_: pending, draft, awaiting approval
+
+**Locked**:
+The state of a Termbase the user has approved; it never changes again, and every Translation that uses it may start.
+_Avoid_: approved, frozen, final
+
 **Term**:
 One entry of a Termbase: a source expression and its fixed rendering, either a name (must appear exactly) or a term (may inflect).
 _Avoid_: entry, keyword, entity

@@ -40,6 +40,15 @@ func New(baseURL, apiKey string) *Client {
 	}
 }
 
+// NewChat targets the chat model. thinking lets a local thinking model reason
+// before it replies; it only applies without an apiKey, which means local
+// Ollama, the only target known to accept the setting.
+func NewChat(baseURL, apiKey string, thinking bool) *Client {
+	c := New(baseURL, apiKey)
+	c.SkipReasoning = !thinking && apiKey == ""
+	return c
+}
+
 // Stream receives a streamed chat completion as it arrives.
 type Stream struct {
 	// Token gets each piece of generated text.
@@ -83,7 +92,29 @@ type Message struct {
 
 // ChatStream runs a streamed chat completion.
 func (c *Client) ChatStream(ctx context.Context, model string, messages []Message, stream Stream) error {
-	body := map[string]any{"model": model, "messages": messages, "stream": true}
+	return c.chat(ctx, map[string]any{"model": model, "messages": messages}, stream)
+}
+
+// ChatJSON runs a chat completion whose reply must be a JSON object, and
+// returns the whole reply. The prompt has to ask for JSON as well: providers
+// reject the JSON mode otherwise. The reply is still streamed underneath, so
+// a slow model is not cut off for staying silent while it generates.
+func (c *Client) ChatJSON(ctx context.Context, model string, messages []Message) (string, error) {
+	var reply strings.Builder
+	body := map[string]any{
+		"model":           model,
+		"messages":        messages,
+		"response_format": map[string]string{"type": "json_object"},
+	}
+	err := c.chat(ctx, body, Stream{Token: func(token string) error {
+		reply.WriteString(token)
+		return nil
+	}})
+	return reply.String(), err
+}
+
+func (c *Client) chat(ctx context.Context, body map[string]any, stream Stream) error {
+	body["stream"] = true
 	if c.SkipReasoning {
 		body["reasoning_effort"] = "none"
 	}

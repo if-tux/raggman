@@ -24,6 +24,12 @@ WHERE file_hash = $1;
 SELECT * FROM books
 WHERE id = $1;
 
+-- name: GetBookForShare :one
+-- Keeps the Book from being removed until the transaction ends.
+SELECT * FROM books
+WHERE id = $1
+FOR SHARE;
+
 -- name: ListBooks :many
 SELECT * FROM books
 ORDER BY created_at DESC;

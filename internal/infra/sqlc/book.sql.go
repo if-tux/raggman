@@ -129,6 +129,28 @@ func (q *Queries) GetBookByHash(ctx context.Context, fileHash string) (Book, err
 	return i, err
 }
 
+const getBookForShare = `-- name: GetBookForShare :one
+SELECT id, file_hash, filename, title, language, total_blocks, created_at FROM books
+WHERE id = $1
+FOR SHARE
+`
+
+// Keeps the Book from being removed until the transaction ends.
+func (q *Queries) GetBookForShare(ctx context.Context, id uuid.UUID) (Book, error) {
+	row := q.db.QueryRow(ctx, getBookForShare, id)
+	var i Book
+	err := row.Scan(
+		&i.ID,
+		&i.FileHash,
+		&i.Filename,
+		&i.Title,
+		&i.Language,
+		&i.TotalBlocks,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const listBooks = `-- name: ListBooks :many
 SELECT id, file_hash, filename, title, language, total_blocks, created_at FROM books
 ORDER BY created_at DESC

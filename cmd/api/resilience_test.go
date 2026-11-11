@@ -106,7 +106,7 @@ func TestRemovingDocumentMidIngestionAbortsJob(t *testing.T) {
 func TestShutdownReleasesUnfinishedJob(t *testing.T) {
 	app, server := newApp(t)
 	pool := db(t)
-	app.Ingestion.ShutdownGrace = 0
+	app.Workers.ShutdownGrace = 0
 	clearQueue(t)
 	stop := startIngestion(t, app)
 

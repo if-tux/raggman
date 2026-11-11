@@ -6,15 +6,17 @@ INSERT INTO job_queue (
 ) RETURNING *;
 
 -- name: DequeueJob :one
+-- Claims the next Job of one of the given types; other types stay queued.
 UPDATE job_queue
 SET status = 'RUNNING',
     locked_at = NOW(),
-    locked_by = $1,
+    locked_by = sqlc.arg(locked_by),
     heartbeat_at = NOW()
 WHERE id = (
     SELECT id FROM job_queue
-    WHERE (status = 'QUEUED' AND run_after <= NOW())
-        OR (status = 'RUNNING' AND heartbeat_at < NOW() - INTERVAL '5 minutes')
+    WHERE job_type = ANY(sqlc.arg(job_types)::text[])
+        AND ((status = 'QUEUED' AND run_after <= NOW())
+            OR (status = 'RUNNING' AND heartbeat_at < NOW() - INTERVAL '5 minutes'))
     ORDER BY run_after ASC
     FOR UPDATE SKIP LOCKED
     LIMIT 1     

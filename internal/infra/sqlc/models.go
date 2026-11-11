@@ -69,3 +69,31 @@ type JobQueue struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	RunAfter    pgtype.Timestamptz `json:"run_after"`
 }
+
+type Term struct {
+	TermbaseID  uuid.UUID `json:"termbase_id"`
+	Source      string    `json:"source"`
+	Rendering   string    `json:"rendering"`
+	Kind        string    `json:"kind"`
+	Occurrences int32     `json:"occurrences"`
+}
+
+type Termbase struct {
+	ID            uuid.UUID          `json:"id"`
+	BookID        uuid.UUID          `json:"book_id"`
+	Language      string             `json:"language"`
+	Status        string             `json:"status"`
+	FailureReason pgtype.Text        `json:"failure_reason"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+type Translation struct {
+	ID            uuid.UUID          `json:"id"`
+	BookID        uuid.UUID          `json:"book_id"`
+	TermbaseID    uuid.UUID          `json:"termbase_id"`
+	Language      string             `json:"language"`
+	Level         string             `json:"level"`
+	Status        string             `json:"status"`
+	FailureReason pgtype.Text        `json:"failure_reason"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}

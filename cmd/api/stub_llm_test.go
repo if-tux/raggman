@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode"
@@ -82,6 +83,56 @@ func stubEmbeddings(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// stubCandidates is what the stub model knows how to find in a passage. It
+// gets a person's rendering wrong on purpose: Raggman must keep the source
+// spelling whatever the model says.
+var stubCandidates = []map[string]string{
+	{"source": "Mara", "type": "person", "rendering": "Mára"},
+	{"source": "Port Varen", "type": "place", "rendering": "Porto Varen"},
+	{"source": "glimmerstone", "type": "term", "rendering": "pedra-lume"},
+}
+
+// extractionCalls counts Termbase extraction calls per passage, so a passage
+// can fail a set number of times.
+var extractionCalls sync.Map
+
+// stubExtraction answers a Termbase extraction prompt with the known
+// candidates the passage holds, plus one it does not: a model inventing a
+// name. Markers in the passage simulate an outage or unreadable replies.
+func stubExtraction(w http.ResponseWriter, system, passage string) {
+	if !strings.Contains(system, "Brazilian Portuguese (pt-BR)") {
+		http.Error(w, "extraction prompt does not name the target language", http.StatusBadRequest)
+		return
+	}
+	if strings.Contains(passage, "⟦") {
+		http.Error(w, "passage still carries inline markers", http.StatusBadRequest)
+		return
+	}
+	if strings.Contains(passage, "extraction-outage") {
+		http.Error(w, "model overloaded", http.StatusServiceUnavailable)
+		return
+	}
+	counter, _ := extractionCalls.LoadOrStore(passage, new(atomic.Int64))
+	calls := counter.(*atomic.Int64).Add(1)
+
+	terms := []map[string]string{{"source": "Zorblat", "type": "person", "rendering": "Zorblat"}}
+	for _, c := range stubCandidates {
+		if strings.Contains(passage, c["source"]) {
+			terms = append(terms, c)
+		}
+	}
+	list, _ := json.Marshal(map[string]any{"terms": terms})
+	reply := "```json\n" + string(list) + "\n```"
+	if strings.Contains(passage, "always-unreadable") || (strings.Contains(passage, "unreadable-twice") && calls <= 2) {
+		reply = "Sure! Here are the names I found: Mara."
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	chunk, _ := json.Marshal(map[string]any{"choices": []map[string]any{{"delta": map[string]string{"content": reply}}}})
+	fmt.Fprintf(w, "data: %s\n\n", chunk)
+	fmt.Fprint(w, "data: [DONE]\n\n")
+}
+
 // chatCalls counts chat completions, so tests can prove the model was skipped.
 var chatCalls atomic.Int64
 
@@ -93,7 +144,10 @@ func stubChat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Model           string `json:"model"`
 		ReasoningEffort string `json:"reasoning_effort"`
-		Messages        []struct {
+		ResponseFormat  struct {
+			Type string `json:"type"`
+		} `json:"response_format"`
+		Messages []struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
 		} `json:"messages"`
@@ -105,6 +159,10 @@ func stubChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Model != "qwen3:8b" {
 		http.Error(w, "unknown model "+req.Model, http.StatusNotFound)
+		return
+	}
+	if req.ResponseFormat.Type == "json_object" {
+		stubExtraction(w, req.Messages[0].Content, req.Messages[len(req.Messages)-1].Content)
 		return
 	}
 	if !strings.Contains(req.Messages[0].Content, "[1]") {

@@ -30,14 +30,11 @@ type Service struct {
 }
 
 func New(pool *pgxpool.Pool, env *environment.Environment, tp *sdktrace.TracerProvider) *Service {
-	chat := llm.New(env.LLMBaseURL, env.LLMAPIKey)
-	// No API key means local Ollama, the only target known to accept it.
-	chat.SkipReasoning = !env.LLMThinking && env.LLMAPIKey == ""
 	return &Service{
 		tracer:        tp.Tracer("raggman/answering"),
 		queries:       sqlc.New(pool),
 		embedder:      llm.New(env.EmbeddingsBaseURL(), ""),
-		chat:          chat,
+		chat:          llm.NewChat(env.LLMBaseURL, env.LLMAPIKey, env.LLMThinking),
 		chatModel:     env.LLMModel,
 		topK:          env.TopK,
 		minSimilarity: env.MinSimilarity,

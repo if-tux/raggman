@@ -79,8 +79,9 @@ SET status = 'RUNNING',
     heartbeat_at = NOW()
 WHERE id = (
     SELECT id FROM job_queue
-    WHERE (status = 'QUEUED' AND run_after <= NOW())
-        OR (status = 'RUNNING' AND heartbeat_at < NOW() - INTERVAL '5 minutes')
+    WHERE job_type = ANY($2::text[])
+        AND ((status = 'QUEUED' AND run_after <= NOW())
+            OR (status = 'RUNNING' AND heartbeat_at < NOW() - INTERVAL '5 minutes'))
     ORDER BY run_after ASC
     FOR UPDATE SKIP LOCKED
     LIMIT 1     
@@ -88,8 +89,14 @@ WHERE id = (
 RETURNING id, target_id, job_type, payload, status, locked_at, locked_by, heartbeat_at, attempts, created_at, run_after
 `
 
-func (q *Queries) DequeueJob(ctx context.Context, lockedBy pgtype.Text) (JobQueue, error) {
-	row := q.db.QueryRow(ctx, dequeueJob, lockedBy)
+type DequeueJobParams struct {
+	LockedBy pgtype.Text `json:"locked_by"`
+	JobTypes []string    `json:"job_types"`
+}
+
+// Claims the next Job of one of the given types; other types stay queued.
+func (q *Queries) DequeueJob(ctx context.Context, arg DequeueJobParams) (JobQueue, error) {
+	row := q.db.QueryRow(ctx, dequeueJob, arg.LockedBy, arg.JobTypes)
 	var i JobQueue
 	err := row.Scan(
 		&i.ID,
