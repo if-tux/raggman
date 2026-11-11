@@ -12,11 +12,15 @@ import (
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/environment"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/llm"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/sqlc"
+	"github.com/BrunoPereiradosSantos/raggman/internal/infra/telemetry"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pgvector/pgvector-go"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Service struct {
+	tracer        trace.Tracer
 	queries       *sqlc.Queries
 	embedder      *llm.Client
 	chat          *llm.Client
@@ -25,11 +29,12 @@ type Service struct {
 	topK          int
 }
 
-func New(pool *pgxpool.Pool, env *environment.Environment) *Service {
+func New(pool *pgxpool.Pool, env *environment.Environment, tp *sdktrace.TracerProvider) *Service {
 	chat := llm.New(env.LLMBaseURL, env.LLMAPIKey)
 	// No API key means local Ollama, the only target known to accept it.
 	chat.SkipReasoning = !env.LLMThinking && env.LLMAPIKey == ""
 	return &Service{
+		tracer:        tp.Tracer("raggman/answering"),
 		queries:       sqlc.New(pool),
 		embedder:      llm.New(env.EmbeddingsBaseURL(), ""),
 		chat:          chat,
@@ -59,12 +64,14 @@ func (s *Service) Answer(ctx context.Context, question string, stream llm.Stream
 		// from drifting to the language of the sources.
 		{Role: "user", Content: question + "\n\n(Answer in the same language as this Question.)"},
 	}
-	err = s.chat.ChatStream(ctx, s.chatModel, messages, llm.Stream{
-		Thinking: stream.Thinking,
-		Token: func(token string) error {
-			answer.WriteString(token)
-			return stream.Token(token)
-		},
+	_, err = telemetry.Span(ctx, s.tracer, "answering.generate", func(ctx context.Context) (struct{}, error) {
+		return struct{}{}, s.chat.ChatStream(ctx, s.chatModel, messages, llm.Stream{
+			Thinking: stream.Thinking,
+			Token: func(token string) error {
+				answer.WriteString(token)
+				return stream.Token(token)
+			},
+		})
 	})
 	if err != nil {
 		return nil, fmt.Errorf("generating answer: %w", err)
@@ -87,13 +94,17 @@ func (s *Service) Answer(ctx context.Context, question string, stream llm.Stream
 // retrieve returns the closest Chunks from Ready Documents, best first,
 // dropping any below the minimum similarity.
 func (s *Service) retrieve(ctx context.Context, question string) ([]sqlc.SearchCorpusRow, error) {
-	vectors, err := s.embedder.Embed(ctx, environment.EmbeddingModel, []string{question})
+	vectors, err := telemetry.Span(ctx, s.tracer, "answering.embed", func(ctx context.Context) ([][]float32, error) {
+		return s.embedder.Embed(ctx, environment.EmbeddingModel, []string{question})
+	})
 	if err != nil {
 		return nil, fmt.Errorf("embedding question: %w", err)
 	}
-	rows, err := s.queries.SearchCorpus(ctx, sqlc.SearchCorpusParams{
-		Embedding: pgvector.NewVector(vectors[0]),
-		TopK:      int32(s.topK),
+	rows, err := telemetry.Span(ctx, s.tracer, "answering.retrieve", func(ctx context.Context) ([]sqlc.SearchCorpusRow, error) {
+		return s.queries.SearchCorpus(ctx, sqlc.SearchCorpusParams{
+			Embedding: pgvector.NewVector(vectors[0]),
+			TopK:      int32(s.topK),
+		})
 	})
 	if err != nil {
 		return nil, fmt.Errorf("searching corpus: %w", err)
