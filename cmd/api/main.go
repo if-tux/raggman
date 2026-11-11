@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -48,10 +49,15 @@ func run(ctx context.Context) error {
 		close(ingestionDone)
 	}()
 
+	// Requests get their own context so long Answer streams can be stopped
+	// shortly before the shutdown deadline instead of being cut mid-write.
+	requestsCtx, stopRequests := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopRequests()
 	server := &http.Server{
 		Addr:              app.Env.HTTPAddr,
 		Handler:           app.Handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		BaseContext:       func(net.Listener) context.Context { return requestsCtx },
 	}
 
 	serveErr := make(chan error, 1)
@@ -72,6 +78,8 @@ func run(ctx context.Context) error {
 	slog.Info("Shutting down gracefully", "timeout", shutdownTimeout)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
+	stopStreams := time.AfterFunc(shutdownTimeout-3*time.Second, stopRequests)
+	defer stopStreams.Stop()
 
 	err = server.Shutdown(shutdownCtx)
 	select {

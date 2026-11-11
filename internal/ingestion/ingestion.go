@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"os"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -47,6 +46,8 @@ const (
 	embedBatchSize    = 32
 )
 
+// Workers run Ingestion Jobs. ShutdownGrace is how long an in-flight Job may
+// finish after shutdown starts; tests lower it.
 type Workers struct {
 	pool          *pgxpool.Pool
 	queries       *sqlc.Queries
@@ -59,7 +60,7 @@ func New(pool *pgxpool.Pool, env *environment.Environment, logger *slog.Logger) 
 	return &Workers{
 		pool:     pool,
 		queries:  sqlc.New(pool),
-		embedder: llm.New(strings.TrimSuffix(env.OllamaHost, "/")+"/v1", ""),
+		embedder: llm.New(env.EmbeddingsBaseURL(), ""),
 		logger:   logger,
 
 		ShutdownGrace: defaultShutdownGrace,

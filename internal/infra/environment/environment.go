@@ -4,28 +4,32 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"strings"
 
 	"github.com/spf13/viper"
 )
 
+// Environment is Raggman's configuration.
+//
+//   - LLMBaseURL, LLMAPIKey, LLMModel: Answer generation, on any
+//     OpenAI-compatible endpoint (ADR-0004).
+//   - LLMThinking: lets local thinking models reason before answering: a
+//     slower first token, but far fewer invented facts. Only applies to local
+//     Ollama (no LLMAPIKey); cloud providers keep their own defaults.
+//   - OllamaHost: embeddings always run on local Ollama (ADR-0001, ADR-0004).
 type Environment struct {
-	Env         string `mapstructure:"APP_ENV"`
-	LogLevel    string `mapstructure:"LOG_LEVEL"`
-	HTTPAddr    string `mapstructure:"HTTP_ADDR"`
-	DatabaseURL string `mapstructure:"DATABASE_URL"`
-
-	// Answer generation: any OpenAI-compatible endpoint (ADR-0004).
-	LLMBaseURL string `mapstructure:"LLM_BASE_URL"`
-	LLMAPIKey  string `mapstructure:"LLM_API_KEY"`
-	LLMModel   string `mapstructure:"LLM_MODEL"`
-
-	// Embeddings always run on local Ollama (ADR-0004), with EmbeddingModel.
-	OllamaHost string `mapstructure:"OLLAMA_HOST"`
-
-	OTLPEndpoint string `mapstructure:"OTEL_EXPORTER_OTLP_ENDPOINT"`
-
+	Env           string  `mapstructure:"APP_ENV"`
+	LogLevel      string  `mapstructure:"LOG_LEVEL"`
+	HTTPAddr      string  `mapstructure:"HTTP_ADDR"`
+	DatabaseURL   string  `mapstructure:"DATABASE_URL"`
+	LLMBaseURL    string  `mapstructure:"LLM_BASE_URL"`
+	LLMAPIKey     string  `mapstructure:"LLM_API_KEY"`
+	LLMModel      string  `mapstructure:"LLM_MODEL"`
+	OllamaHost    string  `mapstructure:"OLLAMA_HOST"`
+	OTLPEndpoint  string  `mapstructure:"OTEL_EXPORTER_OTLP_ENDPOINT"`
 	MinSimilarity float64 `mapstructure:"MIN_SIMILARITY"`
 	TopK          int     `mapstructure:"TOP_K"`
+	LLMThinking   bool    `mapstructure:"LLM_THINKING"`
 }
 
 // EmbeddingModel embeds every Chunk in the Corpus. It is deliberately not
@@ -47,9 +51,10 @@ var defaults = map[string]any{
 	"LLM_BASE_URL":                "http://localhost:11434/v1",
 	"LLM_API_KEY":                 "",
 	"LLM_MODEL":                   "qwen3:8b",
+	"LLM_THINKING":                true,
 	"OLLAMA_HOST":                 "http://localhost:11434",
 	"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
-	"MIN_SIMILARITY":              0.5,
+	"MIN_SIMILARITY":              0.3,
 	"TOP_K":                       5,
 }
 
@@ -78,4 +83,9 @@ func Load() (*Environment, error) {
 	}
 
 	return &env, nil
+}
+
+// EmbeddingsBaseURL is the OpenAI-compatible endpoint of the local Ollama.
+func (e *Environment) EmbeddingsBaseURL() string {
+	return strings.TrimSuffix(e.OllamaHost, "/") + "/v1"
 }

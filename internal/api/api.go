@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/BrunoPereiradosSantos/raggman/internal/answering"
 	"github.com/BrunoPereiradosSantos/raggman/internal/documents"
 	"github.com/BrunoPereiradosSantos/raggman/internal/domain"
 	"github.com/google/uuid"
@@ -17,10 +18,11 @@ import (
 type handler struct {
 	pool      *pgxpool.Pool
 	documents *documents.Service
+	answering *answering.Service
 }
 
-func NewHandler(pool *pgxpool.Pool, docs *documents.Service) http.Handler {
-	h := &handler{pool: pool, documents: docs}
+func NewHandler(pool *pgxpool.Pool, docs *documents.Service, answers *answering.Service) http.Handler {
+	h := &handler{pool: pool, documents: docs, answering: answers}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", h.healthz)
@@ -28,6 +30,7 @@ func NewHandler(pool *pgxpool.Pool, docs *documents.Service) http.Handler {
 	mux.HandleFunc("GET /documents", h.listDocuments)
 	mux.HandleFunc("GET /documents/{id}", h.getDocument)
 	mux.HandleFunc("DELETE /documents/{id}", h.removeDocument)
+	mux.HandleFunc("POST /questions", h.askQuestion)
 
 	return mux
 }

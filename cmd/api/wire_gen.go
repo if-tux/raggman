@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"github.com/BrunoPereiradosSantos/raggman/internal/answering"
 	"github.com/BrunoPereiradosSantos/raggman/internal/api"
 	"github.com/BrunoPereiradosSantos/raggman/internal/documents"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/environment"
@@ -30,7 +31,8 @@ func InitializeApp(ctx context.Context) (*App, func(), error) {
 		return nil, nil, err
 	}
 	service := documents.NewService(pool)
-	handler := api.NewHandler(pool, service)
+	answeringService := answering.New(pool, environmentEnvironment)
+	handler := api.NewHandler(pool, service, answeringService)
 	workers := ingestion.New(pool, environmentEnvironment, slogLogger)
 	app := &App{
 		Env:       environmentEnvironment,
