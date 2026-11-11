@@ -55,20 +55,28 @@ type CreateTermsParams struct {
 }
 
 const createTranslatedBlock = `-- name: CreateTranslatedBlock :exec
-INSERT INTO translated_blocks (translation_id, position, translation)
-VALUES ($1, $2, $3)
+INSERT INTO translated_blocks (translation_id, position, translation, flag_reason, warnings)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (translation_id, position) DO NOTHING
 `
 
 type CreateTranslatedBlockParams struct {
-	TranslationID uuid.UUID `json:"translation_id"`
-	Position      int32     `json:"position"`
-	Translation   string    `json:"translation"`
+	TranslationID uuid.UUID   `json:"translation_id"`
+	Position      int32       `json:"position"`
+	Translation   string      `json:"translation"`
+	FlagReason    pgtype.Text `json:"flag_reason"`
+	Warnings      []string    `json:"warnings"`
 }
 
 // A Block already translated by an earlier attempt keeps its translation.
 func (q *Queries) CreateTranslatedBlock(ctx context.Context, arg CreateTranslatedBlockParams) error {
-	_, err := q.db.Exec(ctx, createTranslatedBlock, arg.TranslationID, arg.Position, arg.Translation)
+	_, err := q.db.Exec(ctx, createTranslatedBlock,
+		arg.TranslationID,
+		arg.Position,
+		arg.Translation,
+		arg.FlagReason,
+		arg.Warnings,
+	)
 	return err
 }
 
@@ -208,6 +216,7 @@ func (q *Queries) GetTranslation(ctx context.Context, id uuid.UUID) (Translation
 const getTranslationProgress = `-- name: GetTranslationProgress :one
 SELECT
     (SELECT count(*) FROM translated_blocks tb WHERE tb.translation_id = t.id)::int AS translated,
+    (SELECT count(*) FROM translated_blocks tb WHERE tb.translation_id = t.id AND tb.flag_reason IS NOT NULL)::int AS flagged,
     b.total_blocks AS total
 FROM translations t
 JOIN books b ON b.id = t.book_id
@@ -216,13 +225,14 @@ WHERE t.id = $1
 
 type GetTranslationProgressRow struct {
 	Translated int32 `json:"translated"`
+	Flagged    int32 `json:"flagged"`
 	Total      int32 `json:"total"`
 }
 
 func (q *Queries) GetTranslationProgress(ctx context.Context, id uuid.UUID) (GetTranslationProgressRow, error) {
 	row := q.db.QueryRow(ctx, getTranslationProgress, id)
 	var i GetTranslationProgressRow
-	err := row.Scan(&i.Translated, &i.Total)
+	err := row.Scan(&i.Translated, &i.Flagged, &i.Total)
 	return i, err
 }
 
@@ -253,6 +263,53 @@ func (q *Queries) ListBlocks(ctx context.Context, bookID uuid.UUID) ([]ListBlock
 			&i.Chapter,
 			&i.Kind,
 			&i.Source,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReportedBlocks = `-- name: ListReportedBlocks :many
+SELECT tb.position, b.chapter, b.source, tb.translation, tb.flag_reason, tb.warnings
+FROM translated_blocks tb
+JOIN translations t ON t.id = tb.translation_id
+JOIN blocks b ON b.book_id = t.book_id AND b.position = tb.position
+WHERE tb.translation_id = $1
+    AND (tb.flag_reason IS NOT NULL OR cardinality(tb.warnings) > 0)
+ORDER BY tb.position
+`
+
+type ListReportedBlocksRow struct {
+	Position    int32       `json:"position"`
+	Chapter     int32       `json:"chapter"`
+	Source      string      `json:"source"`
+	Translation string      `json:"translation"`
+	FlagReason  pgtype.Text `json:"flag_reason"`
+	Warnings    []string    `json:"warnings"`
+}
+
+// The Blocks of a Translation that are Flagged or carry warnings, in reading order.
+func (q *Queries) ListReportedBlocks(ctx context.Context, translationID uuid.UUID) ([]ListReportedBlocksRow, error) {
+	rows, err := q.db.Query(ctx, listReportedBlocks, translationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListReportedBlocksRow
+	for rows.Next() {
+		var i ListReportedBlocksRow
+		if err := rows.Scan(
+			&i.Position,
+			&i.Chapter,
+			&i.Source,
+			&i.Translation,
+			&i.FlagReason,
+			&i.Warnings,
 		); err != nil {
 			return nil, err
 		}
@@ -329,7 +386,7 @@ func (q *Queries) ListTextBlocks(ctx context.Context, bookID uuid.UUID) ([]ListT
 }
 
 const listTranslatedBlocks = `-- name: ListTranslatedBlocks :many
-SELECT position, translation FROM translated_blocks
+SELECT position, translation, (flag_reason IS NOT NULL)::bool AS flagged FROM translated_blocks
 WHERE translation_id = $1
 ORDER BY position
 `
@@ -337,6 +394,7 @@ ORDER BY position
 type ListTranslatedBlocksRow struct {
 	Position    int32  `json:"position"`
 	Translation string `json:"translation"`
+	Flagged     bool   `json:"flagged"`
 }
 
 func (q *Queries) ListTranslatedBlocks(ctx context.Context, translationID uuid.UUID) ([]ListTranslatedBlocksRow, error) {
@@ -348,7 +406,7 @@ func (q *Queries) ListTranslatedBlocks(ctx context.Context, translationID uuid.U
 	var items []ListTranslatedBlocksRow
 	for rows.Next() {
 		var i ListTranslatedBlocksRow
-		if err := rows.Scan(&i.Position, &i.Translation); err != nil {
+		if err := rows.Scan(&i.Position, &i.Translation, &i.Flagged); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

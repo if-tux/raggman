@@ -53,7 +53,7 @@ func Windows(blocks []Block, budget int) [][]Block {
 //
 // ponytail: a marker pair that opens in one part and closes in another
 // (a long Block set wholly in italics) reaches the model unbalanced in each
-// part. The joined Block is what the marker check of #25 verifies.
+// part. Each part is checked as it comes, and the joined Block once more.
 func SplitSentences(source string, budget int) []string {
 	var parts []string
 	var part strings.Builder

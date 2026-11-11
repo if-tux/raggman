@@ -122,8 +122,51 @@ func (h *handler) getTranslation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, struct {
 		translationResponse
 		BlocksTranslated int `json:"blocks_translated"`
+		BlocksFlagged    int `json:"blocks_flagged"`
 		BlocksTotal      int `json:"blocks_total"`
-	}{toTranslationResponse(t), progress.Translated, progress.Total})
+	}{toTranslationResponse(t), progress.Translated, progress.Flagged, progress.Total})
+}
+
+// reportedBlock is a Block in a Translation's report. Position is its place
+// in the Book, Chapter its chapter (0 for the title and table of contents).
+type reportedBlock struct {
+	Source      string `json:"source"`
+	Translation string `json:"translation"`
+	Reason      string `json:"reason,omitempty"`
+	Warning     string `json:"warning,omitempty"`
+	Position    int    `json:"position"`
+	Chapter     int    `json:"chapter"`
+}
+
+// getReport lists what the user should check in a Translation: the Flagged
+// Blocks, each with the reason, and the warnings, one entry per warning.
+func (h *handler) getReport(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "translation")
+	if !ok {
+		return
+	}
+	blocks, err := h.translations.Report(r.Context(), id)
+	if h.translationError(w, r, err) {
+		return
+	}
+	report := struct {
+		Flagged  []reportedBlock `json:"flagged"`
+		Warnings []reportedBlock `json:"warnings"`
+	}{Flagged: []reportedBlock{}, Warnings: []reportedBlock{}}
+	for _, b := range blocks {
+		entry := reportedBlock{Position: b.Position, Chapter: b.Chapter, Source: b.Source, Translation: b.Translation}
+		if b.FlagReason != "" {
+			flagged := entry
+			flagged.Reason = b.FlagReason
+			report.Flagged = append(report.Flagged, flagged)
+		}
+		for _, warning := range b.Warnings {
+			warned := entry
+			warned.Warning = warning
+			report.Warnings = append(report.Warnings, warned)
+		}
+	}
+	writeJSON(w, http.StatusOK, report)
 }
 
 func (h *handler) getTermbase(w http.ResponseWriter, r *http.Request) {

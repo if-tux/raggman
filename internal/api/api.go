@@ -47,6 +47,7 @@ func NewHandler(pool *pgxpool.Pool, docs *documents.Service, bks *books.Service,
 	mux.HandleFunc("GET /translations/{id}/termbase", h.getTermbase)
 	mux.HandleFunc("PUT /translations/{id}/termbase", h.replaceTerms)
 	mux.HandleFunc("POST /translations/{id}/termbase/approve", h.approveTermbase)
+	mux.HandleFunc("GET /translations/{id}/report", h.getReport)
 	mux.Handle("GET /", web.Handler())
 
 	// otelhttp names each server span after the matched route ("POST

@@ -140,8 +140,8 @@ type translationRequest struct{ system, user string }
 var (
 	translationRequestsMu sync.Mutex
 	translationRequests   []translationRequest
-	// translationCalls counts calls per set of blocks, so a set can be
-	// answered badly a set number of times.
+	// translationCalls counts how often each block was seen, per way of
+	// getting it wrong, so a block can be answered badly a set number of times.
 	translationCalls sync.Map
 )
 
@@ -159,17 +159,53 @@ func translationRequestsWith(text string) []translationRequest {
 	return found
 }
 
-var stubBlock = regexp.MustCompile(`(?s)<block (\d+)>\n(.*?)\n</block>`)
+var (
+	stubBlock = regexp.MustCompile(`(?s)<block (\d+)>\n(.*?)\n</block>`)
+	stubTerm  = regexp.MustCompile(`(?m)^- (.+) => (.+)$`)
+	stubMark  = regexp.MustCompile(`⟦/?\d+/?⟧`)
+)
+
+// misbehaves reports whether the stub should get a block wrong in the given
+// way. The block's own text asks for it: "lose-marker-once" is wrong the
+// first time the block is seen, "-twice" the first two times, "-always"
+// every time, "-second" only the second time, and "-later" every time but
+// the first. So a block can fail one rung of the retry ladder, two, or all,
+// fail a rung after passing one, or fail in a different way further up.
+func misbehaves(text, way string) bool {
+	counter, _ := translationCalls.LoadOrStore(way+"|"+text, new(atomic.Int64))
+	calls := counter.(*atomic.Int64).Add(1)
+	switch {
+	case strings.Contains(text, way+"-always"):
+		return true
+	case strings.Contains(text, way+"-twice"):
+		return calls <= 2
+	case strings.Contains(text, way+"-once"):
+		return calls <= 1
+	case strings.Contains(text, way+"-second"):
+		return calls == 2
+	case strings.Contains(text, way+"-later"):
+		return calls >= 2
+	}
+	return false
+}
 
 // stubTranslation "translates" each numbered block by putting "pt:" before
-// it, which keeps names and inline markers as they were. Markers in the
-// blocks simulate an outage, a slow model, or a reply that drops a block.
+// it and writing the Names and Terms of the request as they are given, which
+// is what a model doing its job does. It keeps inline markers. It always
+// turns "Annabel" into "Ana": a model renaming someone the Termbase lacks.
+//
+// Words in a block make the stub get that block wrong (see misbehaves):
+// wrong-name leaves Names and Terms as in the source, skip-term leaves only
+// the Terms, lose-marker drops the markers, echo-source returns the source,
+// too-short returns almost nothing but the markers, and drop-last, in the last block of a
+// request, leaves that block out of the reply. Other words simulate an
+// outage or a slow model.
 func stubTranslation(w http.ResponseWriter, r *http.Request, system, user string) {
 	translationRequestsMu.Lock()
 	translationRequests = append(translationRequests, translationRequest{system: system, user: user})
 	translationRequestsMu.Unlock()
 
-	_, blocks, ok := strings.Cut(user, "Translate these blocks:")
+	lists, blocks, ok := strings.Cut(user, "Translate these blocks:")
 	if !ok {
 		http.Error(w, "translation prompt carries no blocks", http.StatusBadRequest)
 		return
@@ -185,16 +221,38 @@ func stubTranslation(w http.ResponseWriter, r *http.Request, system, user string
 		case <-time.After(3 * time.Second):
 		}
 	}
-	counter, _ := translationCalls.LoadOrStore(blocks, new(atomic.Int64))
-	calls := counter.(*atomic.Int64).Add(1)
+	lists, _, _ = strings.Cut(lists, "What comes just before")
+	nameList, termList, _ := strings.Cut(lists, "Terms (")
 
 	found := stubBlock.FindAllStringSubmatch(blocks, -1)
-	if strings.Contains(blocks, "always-miscount") || (strings.Contains(blocks, "miscount-twice") && calls <= 2) {
+	if last := found[len(found)-1][2]; misbehaves(last, "drop-last") {
 		found = found[:len(found)-1] // a model merging the last Block away
 	}
 	var reply strings.Builder
 	for _, b := range found {
-		fmt.Fprintf(&reply, "<block %s>\npt:%s\n</block>\n", b[1], b[2])
+		source := b[2]
+		out := source
+		if !misbehaves(source, "wrong-name") {
+			for _, name := range stubTerm.FindAllStringSubmatch(nameList, -1) {
+				out = strings.ReplaceAll(out, name[1], name[2])
+			}
+			if !misbehaves(source, "skip-term") {
+				for _, term := range stubTerm.FindAllStringSubmatch(termList, -1) {
+					out = strings.ReplaceAll(out, term[1], term[2])
+				}
+			}
+		}
+		out = "pt:" + strings.ReplaceAll(out, "Annabel", "Ana")
+		if misbehaves(source, "lose-marker") {
+			out = stubMark.ReplaceAllString(out, "")
+		}
+		if misbehaves(source, "echo-source") {
+			out = source
+		}
+		if misbehaves(source, "too-short") {
+			out = "pt:" + strings.Join(stubMark.FindAllString(source, -1), "x")
+		}
+		fmt.Fprintf(&reply, "<block %s>\n%s\n</block>\n", b[1], out)
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")

@@ -19,6 +19,7 @@ type progressJSON struct {
 	Status           string `json:"status"`
 	FailureReason    string `json:"failure_reason"`
 	BlocksTranslated int    `json:"blocks_translated"`
+	BlocksFlagged    int    `json:"blocks_flagged"`
 	BlocksTotal      int    `json:"blocks_total"`
 }
 
@@ -59,12 +60,13 @@ func novel(one, two string) []byte {
 }
 
 // novelTranslated is what the stub makes of novel: "pt:" before every Block
-// the model sees; the scene break and the bare name are copied without it.
+// the model sees, with Names and Terms as the Termbase renders them; the
+// scene break and the bare name are copied without it.
 func novelTranslated(one, two string) []string {
 	return []string{
 		"pt:The Lighthouse Keeper", "pt:⟦1⟧Chapter 1⟦/1⟧", "pt:⟦1⟧Chapter 2⟦/1⟧",
-		"pt:One", "pt:⟦1⟧Mara⟦/1⟧ lit the lamp above Port Varen.", "***", "Mara", "pt:" + one,
-		"pt:Two", "pt:Mara left Port Varen at dawn.", "pt:Mara kept the glimmerstone. " + two,
+		"pt:One", "pt:⟦1⟧Mara⟦/1⟧ lit the lamp above Porto Varen.", "***", "Mara", "pt:" + one,
+		"pt:Two", "pt:Mara left Porto Varen at dawn.", "pt:Mara kept the pedra-lume. " + two,
 	}
 }
 
@@ -310,26 +312,10 @@ func TestInterruptedTranslationResumesWithoutRetranslating(t *testing.T) {
 	}
 }
 
-func TestReplyThatDropsABlockIsAskedAgain(t *testing.T) {
-	app, server := newApp(t)
-	one, two := "A gull cried "+rand.Text()+".", "miscount-twice "+rand.Text()
-	tr := locked(t, server, app, novel(one, two), "formal")
-	startIngestion(t, app)
-	waitForTranslation(t, server, tr.ID, "COMPLETE")
-
-	if got, want := translatedBlocks(t, tr.ID), novelTranslated(one, two); !slices.Equal(got, want) {
-		t.Fatalf("translated Blocks =\n  %q\nwant\n  %q", got, want)
-	}
-	if n := len(translationRequestsWith(two)); n != 3 {
-		t.Fatalf("chapter two was sent %d times, want 3 (two bad replies, then a good one)", n)
-	}
-}
-
-func TestTranslationFailsWhenTheModelKeepsBreakingTheNumbering(t *testing.T) {
+func TestModelOutageRetriesTheJobThenFailsTheTranslation(t *testing.T) {
 	app, server := newApp(t)
 	pool := db(t)
-	one, two := "A gull cried "+rand.Text()+".", "always-miscount "+rand.Text()
-	tr := locked(t, server, app, novel(one, two), "formal")
+	tr := locked(t, server, app, novel("translation-outage "+rand.Text(), "It glowed."), "formal")
 	startIngestion(t, app)
 
 	for attempt := int32(1); attempt <= 2; attempt++ {
@@ -337,8 +323,9 @@ func TestTranslationFailsWhenTheModelKeepsBreakingTheNumbering(t *testing.T) {
 			j, ok := job(t, pool, tr.ID)
 			return ok && j.Status == "QUEUED" && j.Attempts == attempt
 		})
-		if p := getProgress(t, server, tr.ID); p.Status != "TRANSLATING" || p.BlocksTranslated != 8 {
-			t.Fatalf("between attempts = %+v, want TRANSLATING with chapter one kept", p)
+		// The title and table of contents were stored before the outage.
+		if p := getProgress(t, server, tr.ID); p.Status != "TRANSLATING" || p.BlocksTranslated != 3 {
+			t.Fatalf("between attempts = %+v, want TRANSLATING with 3 Blocks kept", p)
 		}
 		// Skip the backoff wait.
 		if _, err := pool.Exec(context.Background(), "UPDATE job_queue SET run_after = NOW() WHERE target_id = $1", tr.ID); err != nil {
@@ -348,29 +335,10 @@ func TestTranslationFailsWhenTheModelKeepsBreakingTheNumbering(t *testing.T) {
 
 	waitForTranslation(t, server, tr.ID, "FAILED")
 	p := getProgress(t, server, tr.ID)
-	if !strings.Contains(p.FailureReason, "3 attempts") || !strings.Contains(p.FailureReason, "numbered block") {
-		t.Fatalf("failure reason = %q, want it to mention 3 attempts and the numbering", p.FailureReason)
+	if !strings.Contains(p.FailureReason, "3 attempts") || !strings.Contains(p.FailureReason, "model overloaded") {
+		t.Fatalf("failure reason = %q, want it to mention 3 attempts and the cause", p.FailureReason)
 	}
-	if p.BlocksTranslated != 8 {
-		t.Fatalf("Blocks kept after failing = %d, want 8", p.BlocksTranslated)
-	}
-	if n := len(translationRequestsWith(one)); n != 1 {
-		t.Fatalf("chapter one was sent %d times across the attempts, want 1", n)
-	}
-}
-
-func TestModelOutageDuringTranslationIsRetried(t *testing.T) {
-	app, server := newApp(t)
-	pool := db(t)
-	tr := locked(t, server, app, novel("translation-outage "+rand.Text(), "It glowed."), "formal")
-	startIngestion(t, app)
-
-	eventually(t, "the failed translation to be re-queued", func() bool {
-		j, ok := job(t, pool, tr.ID)
-		return ok && j.Status == "QUEUED" && j.Attempts == 1
-	})
-	// The title and table of contents were stored before the outage.
-	if p := getProgress(t, server, tr.ID); p.Status != "TRANSLATING" || p.BlocksTranslated != 3 {
-		t.Fatalf("after one failed attempt = %+v, want TRANSLATING with 3 Blocks kept", p)
+	if p.BlocksTranslated != 3 || p.BlocksFlagged != 0 {
+		t.Fatalf("after failing = %+v, want the 3 stored Blocks kept and none Flagged", p)
 	}
 }

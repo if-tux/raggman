@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -33,12 +34,6 @@ const (
 	// translationTemperature is low and fixed: a translation should not vary
 	// between runs.
 	translationTemperature = 0.2
-	// numberingTries is how often a Window is asked again when the reply does
-	// not hold each numbered block once.
-	// ponytail: after that the whole Translation fails, which ADR-0007 rules
-	// out ("a Translation never fails because of one bad Block"). The retry
-	// ladder of #25 replaces this: retry with the error, split, then Flag.
-	numberingTries = 3
 )
 
 // Translating runs translation Jobs: it walks the Book Window by Window, in
@@ -118,17 +113,24 @@ func (t *Translating) Work(ctx context.Context, job sqlc.JobQueue) error {
 		return fmt.Errorf("loading translated blocks: %w", err)
 	}
 	// translated holds every finished Block by position, from earlier
-	// attempts and from this one: it is both what to skip and the context.
-	translated := make(map[int]string, len(blocks))
+	// attempts and from this one: what to skip. reference holds those fit to
+	// be shown to the model as context, which leaves Flagged Blocks out: a
+	// translation that failed its checks, or a source kept untranslated,
+	// would teach the model the very mistake.
+	translated := make(map[int]bool, len(blocks))
+	reference := make(map[int]string, len(blocks))
 	for _, d := range done {
-		translated[int(d.Position)] = d.Translation
+		translated[int(d.Position)] = true
+		if !d.Flagged {
+			reference[int(d.Position)] = d.Translation
+		}
 	}
 
 	prompt := translationPrompt(translation.Language, domain.Level(translation.Level))
 	for _, window := range domain.Windows(blocks, windowChars) {
 		var todo []domain.Block
 		for _, b := range window {
-			if _, ok := translated[b.Position]; !ok {
+			if !translated[b.Position] {
 				todo = append(todo, b)
 			}
 		}
@@ -138,15 +140,18 @@ func (t *Translating) Work(ctx context.Context, job sqlc.JobQueue) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		results, err := t.translateWindow(ctx, prompt, termbase.Terms, todo, blocks, translated)
+		outcomes, err := t.translateWindow(ctx, prompt, termbase.Terms, todo, blocks, reference)
 		if err != nil {
 			return err
 		}
-		if err := t.storeWindow(ctx, job, translation, todo, results); err != nil {
+		if err := t.storeWindow(ctx, job, translation, todo, outcomes); err != nil {
 			return err
 		}
 		for i, b := range todo {
-			translated[b.Position] = results[i]
+			translated[b.Position] = true
+			if outcomes[i].flag == "" {
+				reference[b.Position] = outcomes[i].translation
+			}
 		}
 	}
 
@@ -171,65 +176,195 @@ func (t *Translating) Work(ctx context.Context, job sqlc.JobQueue) error {
 	return tx.Commit(ctx)
 }
 
-// translateWindow returns the translation of each Block in todo, in order.
-func (t *Translating) translateWindow(ctx context.Context, prompt string, terms []domain.Term, todo, blocks []domain.Block, translated map[int]string) ([]string, error) {
-	results := make([]string, len(todo))
+// outcome is what a Block ends up with: its translation, why it is Flagged
+// if it is, and any warnings.
+type outcome struct {
+	translation string
+	// flag is the check the translation still failed after every retry; ""
+	// when it passed.
+	flag     string
+	warnings []string
+}
+
+// translateWindow returns the outcome of each Block in todo, in order. A
+// Block the model cannot get right is Flagged, never an error: only a model
+// that cannot be reached fails the Job (ADR-0007).
+func (t *Translating) translateWindow(ctx context.Context, prompt string, terms []domain.Term, todo, blocks []domain.Block, reference map[int]string) ([]outcome, error) {
+	outcomes := make([]outcome, len(todo))
 	var forModel []int // indexes into todo
 	for i, b := range todo {
 		if copied, ok := domain.WithoutModel(b.Source, terms); ok {
-			results[i] = copied
+			outcomes[i] = outcome{translation: copied}
 		} else {
 			forModel = append(forModel, i)
 		}
 	}
 	if len(forModel) == 0 {
-		return results, nil
+		return outcomes, nil
 	}
-	before := contextBefore(blocks, translated, todo[0].Position)
+	before := contextBefore(blocks, reference, todo[0].Position)
 
 	// A Block over the ceiling is alone in its Window. It goes to the model
-	// part by part, each part seeing the ones before it, and the parts are
-	// joined back into one Block.
+	// part by part, each part seeing the ones before it and climbing the
+	// retry ladder on its own, and the parts are joined back into one Block.
 	if only := todo[forModel[0]]; len(forModel) == 1 && utf8.RuneCountInString(only.Source) > blockCeilingChars {
 		var joined []string
-		for _, part := range domain.SplitSentences(only.Source, windowChars) {
-			out, err := t.ask(ctx, prompt, terms, before, []string{strings.TrimSpace(part)})
+		var flag string
+		for n, part := range domain.SplitSentences(only.Source, windowChars) {
+			part = strings.TrimSpace(part)
+			out, err := t.ladder(ctx, prompt, terms, before, []string{part})
 			if err != nil {
 				return nil, err
 			}
-			joined = append(joined, out[0])
-			before = append(before, passage{source: strings.TrimSpace(part), translation: out[0]})
+			joined = append(joined, out[0].translation)
+			if out[0].flag != "" && flag == "" {
+				flag = fmt.Sprintf("in part %d of this long Block: %s", n+1, out[0].flag)
+			}
+			before = append(before, passage{source: part, translation: out[0].translation})
 			before = before[max(0, len(before)-contextBlocks):]
 		}
-		results[forModel[0]] = strings.Join(joined, " ")
-		return results, nil
+		translation := strings.Join(joined, " ")
+		if flag == "" {
+			// The parts passed one by one; the Block as a whole must too. A
+			// name cut in two by a part boundary is only seen here.
+			flag = domain.Verify(only.Source, translation, terms, domain.DefaultLimits)
+		}
+		outcomes[forModel[0]] = outcome{translation: translation, flag: flag, warnings: domain.Warnings(only.Source, translation, terms)}
+		return outcomes, nil
 	}
 
 	sources := make([]string, len(forModel))
 	for i, at := range forModel {
 		sources[i] = todo[at].Source
 	}
-	out, err := t.ask(ctx, prompt, terms, before, sources)
+	out, err := t.ladder(ctx, prompt, terms, before, sources)
 	if err != nil {
 		return nil, err
 	}
 	for i, at := range forModel {
-		results[at] = out[i]
+		out[i].warnings = domain.Warnings(sources[i], out[i].translation, terms)
+		outcomes[at] = out[i]
 	}
-	return results, nil
+	return outcomes, nil
+}
+
+// ladder translates sources as one Window and climbs the retry ladder for
+// whatever fails a check (ADR-0007):
+//
+//  1. the Window as it is;
+//  2. the same Window again, with the failed checks described to the model;
+//  3. each Block that still fails, alone;
+//  4. a Block that fails even alone is Flagged, keeping its best attempt.
+//
+// A Block that passes at any rung keeps that translation. For a Block that
+// never passes, the best attempt is the last translation the model returned
+// for it, made after it was told what was wrong, and the reason kept is the
+// check that translation failed. A Block the model never returned at all
+// keeps its source text, so the Book stays whole.
+func (t *Translating) ladder(ctx context.Context, prompt string, terms []domain.Term, before []passage, sources []string) ([]outcome, error) {
+	kept := make([]outcome, len(sources))
+	returned := make([]bool, len(sources)) // the model has returned this Block at least once
+	passed := make([]bool, len(sources))
+	// record keeps what one attempt made of source i. translation is "" when
+	// the reply could not be read as numbered blocks; the Block then keeps
+	// what it had, with the reason that goes with it.
+	record := func(i int, translation, reason string) {
+		switch {
+		case passed[i]:
+		case translation != "":
+			kept[i] = outcome{translation: translation, flag: reason}
+			returned[i], passed[i] = true, reason == ""
+		case !returned[i]:
+			kept[i].flag = reason
+		}
+	}
+	allPassed := func() bool { return !slices.Contains(passed, false) }
+	reasons := func() []string {
+		r := make([]string, len(kept))
+		for i := range kept {
+			r[i] = kept[i].flag
+		}
+		return r
+	}
+	try := func(at []int, again string) (broken string, err error) {
+		asked := make([]string, len(at))
+		for k, i := range at {
+			asked[k] = sources[i]
+		}
+		out, why, broken, err := t.attempt(ctx, prompt, terms, before, asked, again)
+		if err != nil {
+			return "", err
+		}
+		for k, i := range at {
+			if broken != "" {
+				record(i, "", broken)
+			} else {
+				record(i, out[k], why[k])
+			}
+		}
+		return broken, nil
+	}
+
+	all := make([]int, len(sources))
+	for i := range all {
+		all[i] = i
+	}
+	broken, err := try(all, "")
+	if err != nil {
+		return nil, err
+	}
+	if !allPassed() {
+		if broken, err = try(all, feedback(broken, reasons())); err != nil {
+			return nil, err
+		}
+	}
+	if !allPassed() && len(sources) > 1 {
+		for i := range sources {
+			if passed[i] {
+				continue
+			}
+			if _, err := try([]int{i}, feedback(broken, []string{kept[i].flag})); err != nil {
+				return nil, err
+			}
+		}
+	}
+	for i, source := range sources {
+		if !returned[i] {
+			kept[i].translation = source
+		}
+	}
+	return kept, nil
+}
+
+// feedback tells the model why its previous answer was not accepted. broken
+// is what was wrong with the answer as a whole ("" if it could be read);
+// reasons holds, per block, the check it failed ("" if it passed).
+func feedback(broken string, reasons []string) string {
+	var b strings.Builder
+	b.WriteString("\nYour previous answer was rejected:\n")
+	if broken != "" {
+		fmt.Fprintf(&b, "- %s\n", broken)
+	}
+	for i, reason := range reasons {
+		if reason != "" && reason != broken {
+			fmt.Fprintf(&b, "- block %d: %s\n", i+1, reason)
+		}
+	}
+	b.WriteString("Translate the blocks again, correcting this.\n")
+	return b.String()
 }
 
 // passage is a stretch of the Book with its translation, shown to the model
 // as context.
 type passage struct{ source, translation string }
 
-// contextBefore returns the last translated Blocks before position, as many
-// as fit contextChars. They may belong to the previous chapter: a chapter
+// contextBefore returns the last Blocks before position that have a
+// translation fit for reference, as many as fit contextChars. They may belong to the previous chapter: a chapter
 // opening still follows from what was just read.
 //
 // ponytail: scans the Blocks from the end for every Window. Keep an index of
 // the last translated position if a Book is large enough for that to show.
-func contextBefore(blocks []domain.Block, translated map[int]string, position int) []passage {
+func contextBefore(blocks []domain.Block, reference map[int]string, position int) []passage {
 	var before []passage
 	size := 0
 	for i := len(blocks) - 1; i >= 0 && len(before) < contextBlocks; i-- {
@@ -237,7 +372,7 @@ func contextBefore(blocks []domain.Block, translated map[int]string, position in
 		if b.Position >= position {
 			continue
 		}
-		translation, ok := translated[b.Position]
+		translation, ok := reference[b.Position]
 		if !ok {
 			continue
 		}
@@ -249,10 +384,14 @@ func contextBefore(blocks []domain.Block, translated map[int]string, position in
 	return before
 }
 
-// ask sends sources to the model as numbered blocks and returns their
-// translations, one for one. A reply that breaks the numbering is asked for
-// again; one that keeps breaking it is an error.
-func (t *Translating) ask(ctx context.Context, prompt string, terms []domain.Term, before []passage, sources []string) ([]string, error) {
+// attempt sends sources to the model once, as numbered blocks, and checks
+// the reply without a model. It returns the translations, one per source,
+// and for each the check it failed, "" if none. When the reply does not hold
+// each numbered block exactly once there are no translations to return, and
+// broken says what was wrong with it. An error means the model could not be
+// reached. again, if set, is appended to the request: the feedback on an
+// answer that was not accepted.
+func (t *Translating) attempt(ctx context.Context, prompt string, terms []domain.Term, before []passage, sources []string, again string) (out, reasons []string, broken string, err error) {
 	var user strings.Builder
 	// Names are fixed to the letter; other Terms are fixed in meaning and may
 	// inflect, as the target language requires (ADR-0006).
@@ -288,25 +427,26 @@ func (t *Translating) ask(ctx context.Context, prompt string, terms []domain.Ter
 	}
 	user.WriteString("Translate these blocks:\n")
 	user.WriteString(domain.FormatBlocks(sources))
+	user.WriteString(again)
 	messages := []llm.Message{{Role: "system", Content: prompt}, {Role: "user", Content: user.String()}}
 
-	var err error
-	for range numberingTries {
-		var reply string
-		reply, err = t.chat.ChatText(ctx, t.model, messages, translationTemperature)
-		if err != nil {
-			return nil, fmt.Errorf("translating: %w", err)
-		}
-		var out []string
-		if out, err = domain.ParseBlocks(reply, len(sources)); err == nil {
-			return out, nil
-		}
+	reply, err := t.chat.ChatText(ctx, t.model, messages, translationTemperature)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("translating: %w", err)
 	}
-	return nil, fmt.Errorf("translating: %w", err)
+	out, err = domain.ParseBlocks(reply, len(sources))
+	if err != nil {
+		return nil, nil, err.Error(), nil
+	}
+	reasons = make([]string, len(sources))
+	for i, source := range sources {
+		reasons[i] = domain.Verify(source, out[i], terms, domain.DefaultLimits)
+	}
+	return out, reasons, "", nil
 }
 
 // storeWindow commits a Window's translations, unless this worker lost the Job.
-func (t *Translating) storeWindow(ctx context.Context, job sqlc.JobQueue, translation sqlc.Translation, todo []domain.Block, results []string) error {
+func (t *Translating) storeWindow(ctx context.Context, job sqlc.JobQueue, translation sqlc.Translation, todo []domain.Block, outcomes []outcome) error {
 	tx, err := t.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -318,8 +458,16 @@ func (t *Translating) storeWindow(ctx context.Context, job sqlc.JobQueue, transl
 		return err
 	}
 	for i, b := range todo {
+		warnings := outcomes[i].warnings
+		if warnings == nil {
+			warnings = []string{}
+		}
 		err := q.CreateTranslatedBlock(ctx, sqlc.CreateTranslatedBlockParams{
-			TranslationID: translation.ID, Position: int32(b.Position), Translation: results[i],
+			TranslationID: translation.ID,
+			Position:      int32(b.Position),
+			Translation:   outcomes[i].translation,
+			FlagReason:    reason(outcomes[i].flag),
+			Warnings:      warnings,
 		})
 		if err != nil {
 			return fmt.Errorf("storing translated block: %w", err)
