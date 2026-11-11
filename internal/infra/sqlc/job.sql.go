@@ -12,14 +12,24 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const completeJob = `-- name: CompleteJob :exec
+const completeJob = `-- name: CompleteJob :execrows
 DELETE FROM job_queue
-WHERE id = $1
+WHERE id = $1 AND locked_by = $2
 `
 
-func (q *Queries) CompleteJob(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.Exec(ctx, completeJob, id)
-	return err
+type CompleteJobParams struct {
+	ID       uuid.UUID   `json:"id"`
+	LockedBy pgtype.Text `json:"locked_by"`
+}
+
+// Only the worker holding the lock may complete a Job; 0 rows means the
+// Job was reclaimed by another worker.
+func (q *Queries) CompleteJob(ctx context.Context, arg CompleteJobParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completeJob, arg.ID, arg.LockedBy)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const createJob = `-- name: CreateJob :one
@@ -69,9 +79,9 @@ SET status = 'RUNNING',
     heartbeat_at = NOW()
 WHERE id = (
     SELECT id FROM job_queue
-    WHERE status = 'QUEUED'
+    WHERE (status = 'QUEUED' AND run_after <= NOW())
         OR (status = 'RUNNING' AND heartbeat_at < NOW() - INTERVAL '5 minutes')
-    ORDER BY created_at ASC
+    ORDER BY run_after ASC
     FOR UPDATE SKIP LOCKED
     LIMIT 1     
 )

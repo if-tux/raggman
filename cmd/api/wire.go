@@ -10,6 +10,7 @@ import (
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/environment"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/logger"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/postgres"
+	"github.com/BrunoPereiradosSantos/raggman/internal/ingestion"
 	"github.com/google/wire"
 )
 
@@ -21,6 +22,7 @@ func InitializeApp(ctx context.Context) (*App, func(), error) {
 		postgres.NewDatabasePool,
 		documents.NewService,
 		api.NewHandler,
+		ingestion.New,
 		wire.Struct(new(App), "*"),
 	)
 	return nil, nil, nil

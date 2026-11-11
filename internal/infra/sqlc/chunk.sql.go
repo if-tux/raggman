@@ -47,6 +47,16 @@ func (q *Queries) CreateChunk(ctx context.Context, arg CreateChunkParams) (Chunk
 	return i, err
 }
 
+const deleteChunksByDocument = `-- name: DeleteChunksByDocument :exec
+DELETE FROM chunks
+WHERE document_id = $1
+`
+
+func (q *Queries) DeleteChunksByDocument(ctx context.Context, documentID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteChunksByDocument, documentID)
+	return err
+}
+
 const searchChunks = `-- name: SearchChunks :many
 SELECT 
     id, 

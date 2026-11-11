@@ -13,9 +13,9 @@ SET status = 'RUNNING',
     heartbeat_at = NOW()
 WHERE id = (
     SELECT id FROM job_queue
-    WHERE status = 'QUEUED'
+    WHERE (status = 'QUEUED' AND run_after <= NOW())
         OR (status = 'RUNNING' AND heartbeat_at < NOW() - INTERVAL '5 minutes')
-    ORDER BY created_at ASC
+    ORDER BY run_after ASC
     FOR UPDATE SKIP LOCKED
     LIMIT 1     
 )
@@ -26,9 +26,11 @@ UPDATE job_queue
 SET heartbeat_at = NOW()
 WHERE id = $1 AND locked_by = $2;
 
--- name: CompleteJob :exec
+-- name: CompleteJob :execrows
+-- Only the worker holding the lock may complete a Job; 0 rows means the
+-- Job was reclaimed by another worker.
 DELETE FROM job_queue
-WHERE id = $1;
+WHERE id = $1 AND locked_by = $2;
 
 -- name: FailedJob :exec
 UPDATE job_queue

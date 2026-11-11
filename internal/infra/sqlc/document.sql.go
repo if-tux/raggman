@@ -119,6 +119,18 @@ func (q *Queries) GetDocumentByHashForUpdate(ctx context.Context, fileHash strin
 	return i, err
 }
 
+const getDocumentContent = `-- name: GetDocumentContent :one
+SELECT content FROM document_files
+WHERE document_id = $1
+`
+
+func (q *Queries) GetDocumentContent(ctx context.Context, documentID uuid.UUID) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getDocumentContent, documentID)
+	var content []byte
+	err := row.Scan(&content)
+	return content, err
+}
+
 const listDocuments = `-- name: ListDocuments :many
 SELECT id, file_hash, filename, total_pages, status, created_at, failure_reason FROM documents
 ORDER BY created_at DESC
@@ -150,6 +162,22 @@ func (q *Queries) ListDocuments(ctx context.Context) ([]Document, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const setDocumentTotalPages = `-- name: SetDocumentTotalPages :exec
+UPDATE documents
+SET total_pages = $2
+WHERE id = $1
+`
+
+type SetDocumentTotalPagesParams struct {
+	ID         uuid.UUID   `json:"id"`
+	TotalPages pgtype.Int4 `json:"total_pages"`
+}
+
+func (q *Queries) SetDocumentTotalPages(ctx context.Context, arg SetDocumentTotalPagesParams) error {
+	_, err := q.db.Exec(ctx, setDocumentTotalPages, arg.ID, arg.TotalPages)
+	return err
 }
 
 const updateDocumentStatus = `-- name: UpdateDocumentStatus :exec

@@ -11,14 +11,16 @@ import (
 	"time"
 
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/environment"
+	"github.com/BrunoPereiradosSantos/raggman/internal/ingestion"
 )
 
 // shutdownTimeout bounds how long in-flight requests get after SIGTERM.
 const shutdownTimeout = 30 * time.Second
 
 type App struct {
-	Env     *environment.Environment
-	Handler http.Handler
+	Env       *environment.Environment
+	Handler   http.Handler
+	Ingestion *ingestion.Workers
 }
 
 func main() {
@@ -38,6 +40,14 @@ func run(ctx context.Context) error {
 	}
 	defer cleanup()
 
+	ctx, stopIngestion := context.WithCancel(ctx)
+	defer stopIngestion()
+	ingestionDone := make(chan struct{})
+	go func() {
+		app.Ingestion.Run(ctx)
+		close(ingestionDone)
+	}()
+
 	server := &http.Server{
 		Addr:              app.Env.HTTPAddr,
 		Handler:           app.Handler,
@@ -52,6 +62,9 @@ func run(ctx context.Context) error {
 
 	select {
 	case err := <-serveErr:
+		// Let workers finish their transactions before cleanup closes the pool.
+		stopIngestion()
+		<-ingestionDone
 		return err
 	case <-ctx.Done():
 	}
@@ -60,7 +73,13 @@ func run(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
-	if err := server.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	err = server.Shutdown(shutdownCtx)
+	select {
+	case <-ingestionDone:
+	case <-shutdownCtx.Done():
+		slog.Warn("Ingestion workers did not stop before the shutdown timeout")
+	}
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil

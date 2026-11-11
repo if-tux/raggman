@@ -15,3 +15,6 @@ SELECT
 FROM chunks
 ORDER By embedding <=> $1
 LIMIT $2;
+-- name: DeleteChunksByDocument :exec
+DELETE FROM chunks
+WHERE document_id = $1;
