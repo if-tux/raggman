@@ -1,6 +1,6 @@
 # Raggman
 
-Raggman answers natural-language Questions with Answers grounded in a shared Corpus of PDF Documents, citing the Chunks it drew from.
+Raggman answers natural-language Questions with Answers grounded in a shared Corpus of PDF Documents, citing the Chunks it drew from. It also translates Books into another language at a chosen Level.
 
 ## Corpus
 
@@ -44,3 +44,37 @@ _Avoid_: response, completion, reply
 **Citation**:
 A reference from an Answer to a Chunk that supports it, locating that Chunk's Document and Page.
 _Avoid_: source, reference
+
+## Translation
+
+**Book**:
+An EPUB submitted to Raggman for translation, identified by its content like a Document; a Book never belongs to the Corpus.
+_Avoid_: document, file, ebook
+
+**Translation**:
+One Book rendered into one target language at one Level.
+_Avoid_: job, run, version
+
+**Level**:
+The register a Translation is written in: formal, informal or children's. A Level changes wording only, never content.
+_Avoid_: style, tone, mode
+
+**Block**:
+One paragraph, heading or list item of a Book; the atomic unit of translation, translated exactly once and never cut.
+_Avoid_: segment, chunk, paragraph, sentence
+
+**Window**:
+A run of consecutive Blocks from one chapter sent to the model in a single call; a Window never crosses a chapter.
+_Avoid_: batch, chunk, context
+
+**Termbase**:
+The fixed list of Terms for one Book and one target language, reviewed by the user and locked before any Block is translated.
+_Avoid_: glossary, dictionary, vocabulary
+
+**Term**:
+One entry of a Termbase: a source expression and its fixed rendering, either a name (must appear exactly) or a term (may inflect).
+_Avoid_: entry, keyword, entity
+
+**Flagged**:
+The state of a Block whose translation still fails a check after every retry; its best attempt is kept and listed in the Translation's report.
+_Avoid_: failed, broken, rejected
