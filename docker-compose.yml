@@ -7,6 +7,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       DATABASE_URL: postgres://raggman:secretpassword@postgres:5432/raggman_db?sslmode=disable
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      OTEL_TRACES_EXPORTER: ${OTEL_TRACES_EXPORTER:-otlp}
       # Answer generation; point at any OpenAI-compatible provider to use an API key.
       LLM_BASE_URL: ${LLM_BASE_URL:-http://ollama:11434/v1}
       LLM_API_KEY: ${LLM_API_KEY:-}
@@ -15,13 +16,15 @@ services:
       # likely to invent facts. Set false for speed on slow hardware. Only
       # applies to local Ollama; with LLM_API_KEY the provider's default holds.
       LLM_THINKING: ${LLM_THINKING:-true}
-      # Embeddings always stay on Ollama. On macOS, for GPU, set OLLAMA_HOST=http://host.docker.internal:11434
-      # and LLM_BASE_URL=http://host.docker.internal:11434/v1.
-      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
+      # Embeddings always stay on Ollama. On macOS, for GPU, set
+      # RAGGMAN_OLLAMA_HOST=http://host.docker.internal:11434 and
+      # LLM_BASE_URL=http://host.docker.internal:11434/v1. (Not OLLAMA_HOST: Ollama
+      # users often export that to set where their own server listens.)
+      OLLAMA_HOST: ${RAGGMAN_OLLAMA_HOST:-http://ollama:11434}
       TOP_K: ${TOP_K:-5}
       MIN_SIMILARITY: ${MIN_SIMILARITY:-0.3}
     ports:
-      - "8080:8080"
+      - "${RAGGMAN_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,7 +47,7 @@ services:
       POSTGRES_PASSWORD: secretpassword
       POSTGRES_DB: raggman_db
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -71,8 +74,8 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: raggman_ollama
-    ports:
-      - "11434:11434"
+    # No host port: the app reaches Ollama on the compose network, and an Ollama
+    # already running on the host keeps its 11434.
     volumes:
       - ollama:/root/.ollama
     healthcheck:
@@ -91,7 +94,7 @@ services:
       ollama:
         condition: service_healthy
     environment:
-      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
+      OLLAMA_HOST: ${RAGGMAN_OLLAMA_HOST:-http://ollama:11434}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-qwen3:8b}
     entrypoint: ["/bin/sh", "-c"]

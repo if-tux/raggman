@@ -1,4 +1,4 @@
-DB_URL := "postgres://raggman:secretpassword@localhost:5432/raggman_db?sslmode=disable"
+DB_URL := "postgres://raggman:secretpassword@localhost:$${POSTGRES_PORT:-5432}/raggman_db?sslmode=disable"
 MIGRATION_PATH := "internal/infra/postgres/migrations"
 
 .PHONY: infra-up infra-down infra-logs ollama-start
@@ -42,7 +42,7 @@ pgvector-setup:
 	@echo "Enabling the pgvector extension on the raggman_db database..."
 	docker exec -it raggman_db psql -U raggman -d raggman_db -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
-.PHONY: sqlc dev build build-prod test clean
+.PHONY: sqlc dev build build-prod test clean smoke
 
 sqlc:
 	@echo "Generating sqlc code..."
@@ -61,6 +61,10 @@ build-prod:
 
 test:
 	go test -v -cover ./...
+
+# End-to-end check against a running stack with real models (not part of CI).
+smoke:
+	go run ./cmd/smoke -url http://localhost:$${RAGGMAN_PORT:-8080}
 
 clean:
 	go clean -modcache
