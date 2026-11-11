@@ -3,8 +3,6 @@
 package domain
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -36,10 +34,9 @@ type Document struct {
 
 // NewDocument creates a Pending Document whose identity is the SHA-256 of content.
 func NewDocument(filename string, content []byte) Document {
-	sum := sha256.Sum256(content)
 	return Document{
 		ID:       uuid.New(),
-		FileHash: hex.EncodeToString(sum[:]),
+		FileHash: ContentHash(content),
 		Filename: filename,
 		Status:   StatusPending,
 	}

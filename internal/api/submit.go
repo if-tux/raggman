@@ -7,24 +7,32 @@ import (
 	"net/http"
 )
 
-// maxDocumentBytes caps a Document's size.
-const maxDocumentBytes = 50 << 20
+// maxSubmissionBytes caps the size of a submitted Document or Book.
+const maxSubmissionBytes = 50 << 20
 
-func (h *handler) submitDocument(w http.ResponseWriter, r *http.Request) {
+// readUpload reads the uploaded file of a submission, answering the request
+// itself when there is none to use. format names what is expected, for the
+// error message.
+func readUpload(w http.ResponseWriter, r *http.Request, format string) (filename string, content []byte, ok bool) {
 	// Leave room for multipart headers around the file itself.
-	r.Body = http.MaxBytesReader(w, r.Body, maxDocumentBytes+1<<20)
+	r.Body = http.MaxBytesReader(w, r.Body, maxSubmissionBytes+1<<20)
 
 	filename, content, err := readFilePart(r)
 	var tooLarge *http.MaxBytesError
 	switch {
 	case errors.As(err, &tooLarge) || errors.Is(err, errTooLarge):
-		writeError(w, http.StatusRequestEntityTooLarge, "the PDF exceeds the 50 MB limit")
-		return
+		writeError(w, http.StatusRequestEntityTooLarge, "the "+format+" exceeds the 50 MB limit")
 	case errors.Is(err, errMissingFile), errors.Is(err, errMissingFilename):
 		writeError(w, http.StatusBadRequest, err.Error())
-		return
 	case err != nil:
 		writeError(w, http.StatusBadRequest, "malformed multipart/form-data request")
+	}
+	return filename, content, err == nil
+}
+
+func (h *handler) submitDocument(w http.ResponseWriter, r *http.Request) {
+	filename, content, ok := readUpload(w, r, "PDF")
+	if !ok {
 		return
 	}
 
@@ -73,11 +81,11 @@ func readFilePart(r *http.Request) (string, []byte, error) {
 			return "", nil, errMissingFilename
 		}
 
-		content, err := io.ReadAll(io.LimitReader(part, maxDocumentBytes+1))
+		content, err := io.ReadAll(io.LimitReader(part, maxSubmissionBytes+1))
 		if err != nil {
 			return "", nil, err
 		}
-		if len(content) > maxDocumentBytes {
+		if len(content) > maxSubmissionBytes {
 			return "", nil, errTooLarge
 		}
 		return part.FileName(), content, nil
