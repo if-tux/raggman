@@ -28,12 +28,40 @@ WHERE id = $1 AND locked_by = $2;
 
 -- name: CompleteJob :execrows
 -- Only the worker holding the lock may complete a Job; 0 rows means the
--- Job was reclaimed by another worker.
+-- Job was reclaimed by another worker. Also used to drop aborted Jobs.
 DELETE FROM job_queue
 WHERE id = $1 AND locked_by = $2;
 
--- name: FailedJob :exec
+-- The queries below act only for the worker holding the Job's lock; 0 rows
+-- means the Job was reclaimed by another worker.
+
+-- name: RetryJob :execrows
+-- Counts a failed attempt and re-queues the Job after a backoff.
+UPDATE job_queue
+SET status = 'QUEUED',
+    attempts = attempts + 1,
+    run_after = NOW() + make_interval(secs => sqlc.arg(backoff_seconds)::float8),
+    locked_at = NULL,
+    locked_by = NULL,
+    heartbeat_at = NULL
+WHERE id = sqlc.arg(id) AND locked_by = sqlc.arg(locked_by);
+
+-- name: FailJob :execrows
+-- Counts the last failed attempt; the Job is not claimed again.
 UPDATE job_queue
 SET status = 'FAILED',
-    attempts = attempts + 1
-WHERE id = $1;
+    attempts = attempts + 1,
+    locked_at = NULL,
+    locked_by = NULL,
+    heartbeat_at = NULL
+WHERE id = sqlc.arg(id) AND locked_by = sqlc.arg(locked_by);
+
+-- name: ReleaseJob :execrows
+-- Hands an unfinished Job back to the queue without counting an attempt.
+UPDATE job_queue
+SET status = 'QUEUED',
+    run_after = NOW(),
+    locked_at = NULL,
+    locked_by = NULL,
+    heartbeat_at = NULL
+WHERE id = sqlc.arg(id) AND locked_by = sqlc.arg(locked_by);

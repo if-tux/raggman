@@ -5,11 +5,21 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
 
-func startIngestion(t *testing.T, app *App) {
+// clearQueue drops Jobs left by earlier tests so workers only see this test's.
+func clearQueue(t *testing.T) {
+	t.Helper()
+	if _, err := db(t).Exec(context.Background(), "DELETE FROM job_queue"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// startIngestion runs the workers until the test ends or stop is called.
+func startIngestion(t *testing.T, app *App) (stop func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -17,27 +27,39 @@ func startIngestion(t *testing.T, app *App) {
 		app.Ingestion.Run(ctx)
 		close(done)
 	}()
-	t.Cleanup(func() {
-		cancel()
-		<-done
-	})
+	var once sync.Once
+	stop = func() { once.Do(func() { cancel(); <-done }) }
+	t.Cleanup(stop)
+	return stop
+}
+
+// eventually polls cond until it holds or 30s pass.
+func eventually(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func getDocument(t *testing.T, server *httptest.Server, id string) documentJSON {
+	t.Helper()
+	resp := get(t, server.URL+"/documents/"+id)
+	wantStatus(t, resp, http.StatusOK)
+	return decode[documentJSON](t, resp.Body)
 }
 
 func waitForStatus(t *testing.T, server *httptest.Server, id, want string) documentJSON {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		resp := get(t, server.URL+"/documents/"+id)
-		wantStatus(t, resp, http.StatusOK)
-		doc := decode[documentJSON](t, resp.Body)
-		if doc.Status == want {
-			return doc
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("Document %s still %s after 30s, want %s", id, doc.Status, want)
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+	var doc documentJSON
+	eventually(t, "Document "+id+" to be "+want, func() bool {
+		doc = getDocument(t, server, id)
+		return doc.Status == want
+	})
+	return doc
 }
 
 // testdata/three-pages.pdf: Page 1 holds one sentence, Page 2 about 3200
@@ -45,10 +67,7 @@ func waitForStatus(t *testing.T, server *httptest.Server, id, want string) docum
 func TestIngestionMakesDocumentReadyWithChunksPerPage(t *testing.T) {
 	app, server := newApp(t)
 	pool := db(t)
-	// Earlier tests leave Jobs for fake PDFs; drop them so workers only see ours.
-	if _, err := pool.Exec(context.Background(), "DELETE FROM job_queue"); err != nil {
-		t.Fatal(err)
-	}
+	clearQueue(t)
 	startIngestion(t, app)
 
 	content, err := os.ReadFile("testdata/three-pages.pdf")

@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/environment"
 	"github.com/testcontainers/testcontainers-go"
@@ -64,6 +66,20 @@ func stubEmbeddings(w http.ResponseWriter, r *http.Request) {
 	if req.Model != "qwen3-embedding:0.6b" {
 		http.Error(w, "unknown model "+req.Model, http.StatusNotFound)
 		return
+	}
+	// Markers in the text let tests simulate an outage or a slow Ollama.
+	for _, text := range req.Input {
+		if strings.Contains(text, "embedding-outage") {
+			http.Error(w, "model unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if strings.Contains(text, "slow-embedding") {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(3 * time.Second):
+			}
+		}
 	}
 
 	type item struct {
