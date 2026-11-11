@@ -153,8 +153,9 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (domain.Translation, er
 	return fromRow(row), nil
 }
 
-// Progress is how far a Translation is: Blocks translated out of the Book's total.
-type Progress struct{ Translated, Total int }
+// Progress is how far a Translation is: Blocks translated out of the Book's
+// total, and how many of those are Flagged.
+type Progress struct{ Translated, Flagged, Total int }
 
 // Progress reports how many of the Book's Blocks a Translation has finished.
 func (s *Service) Progress(ctx context.Context, id uuid.UUID) (Progress, error) {
@@ -165,7 +166,44 @@ func (s *Service) Progress(ctx context.Context, id uuid.UUID) (Progress, error) 
 	if err != nil {
 		return Progress{}, err
 	}
-	return Progress{Translated: int(row.Translated), Total: int(row.Total)}, nil
+	return Progress{Translated: int(row.Translated), Flagged: int(row.Flagged), Total: int(row.Total)}, nil
+}
+
+// ReportedBlock is a translated Block the user should look at: it is Flagged,
+// or it carries warnings, or both.
+type ReportedBlock struct {
+	Source      string
+	Translation string
+	// FlagReason is the check the translation still failed after every
+	// retry; "" if the Block is not Flagged.
+	FlagReason string
+	Warnings   []string
+	Position   int
+	Chapter    int
+}
+
+// Report lists the Blocks of a Translation that are Flagged or carry
+// warnings, in reading order.
+func (s *Service) Report(ctx context.Context, id uuid.UUID) ([]ReportedBlock, error) {
+	if _, err := s.Get(ctx, id); err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.ListReportedBlocks(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	blocks := make([]ReportedBlock, len(rows))
+	for i, r := range rows {
+		blocks[i] = ReportedBlock{
+			Position:    int(r.Position),
+			Chapter:     int(r.Chapter),
+			Source:      r.Source,
+			Translation: r.Translation,
+			FlagReason:  r.FlagReason.String,
+			Warnings:    r.Warnings,
+		}
+	}
+	return blocks, nil
 }
 
 // List returns every Translation, oldest first.

@@ -76,19 +76,30 @@ WHERE book_id = $1
 ORDER BY position;
 
 -- name: ListTranslatedBlocks :many
-SELECT position, translation FROM translated_blocks
+SELECT position, translation, (flag_reason IS NOT NULL)::bool AS flagged FROM translated_blocks
 WHERE translation_id = $1
 ORDER BY position;
 
 -- name: CreateTranslatedBlock :exec
 -- A Block already translated by an earlier attempt keeps its translation.
-INSERT INTO translated_blocks (translation_id, position, translation)
-VALUES ($1, $2, $3)
+INSERT INTO translated_blocks (translation_id, position, translation, flag_reason, warnings)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (translation_id, position) DO NOTHING;
+
+-- name: ListReportedBlocks :many
+-- The Blocks of a Translation that are Flagged or carry warnings, in reading order.
+SELECT tb.position, b.chapter, b.source, tb.translation, tb.flag_reason, tb.warnings
+FROM translated_blocks tb
+JOIN translations t ON t.id = tb.translation_id
+JOIN blocks b ON b.book_id = t.book_id AND b.position = tb.position
+WHERE tb.translation_id = $1
+    AND (tb.flag_reason IS NOT NULL OR cardinality(tb.warnings) > 0)
+ORDER BY tb.position;
 
 -- name: GetTranslationProgress :one
 SELECT
     (SELECT count(*) FROM translated_blocks tb WHERE tb.translation_id = t.id)::int AS translated,
+    (SELECT count(*) FROM translated_blocks tb WHERE tb.translation_id = t.id AND tb.flag_reason IS NOT NULL)::int AS flagged,
     b.total_blocks AS total
 FROM translations t
 JOIN books b ON b.id = t.book_id

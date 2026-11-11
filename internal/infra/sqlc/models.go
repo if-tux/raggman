@@ -88,9 +88,11 @@ type Termbase struct {
 }
 
 type TranslatedBlock struct {
-	TranslationID uuid.UUID `json:"translation_id"`
-	Position      int32     `json:"position"`
-	Translation   string    `json:"translation"`
+	TranslationID uuid.UUID   `json:"translation_id"`
+	Position      int32       `json:"position"`
+	Translation   string      `json:"translation"`
+	FlagReason    pgtype.Text `json:"flag_reason"`
+	Warnings      []string    `json:"warnings"`
 }
 
 type Translation struct {
