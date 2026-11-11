@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -133,6 +134,75 @@ func stubExtraction(w http.ResponseWriter, system, passage string) {
 	fmt.Fprint(w, "data: [DONE]\n\n")
 }
 
+// translationRequest is one call the stub translator received.
+type translationRequest struct{ system, user string }
+
+var (
+	translationRequestsMu sync.Mutex
+	translationRequests   []translationRequest
+	// translationCalls counts calls per set of blocks, so a set can be
+	// answered badly a set number of times.
+	translationCalls sync.Map
+)
+
+// translationRequestsWith returns the stub translator's calls whose blocks to
+// translate contain text.
+func translationRequestsWith(text string) []translationRequest {
+	translationRequestsMu.Lock()
+	defer translationRequestsMu.Unlock()
+	var found []translationRequest
+	for _, req := range translationRequests {
+		if _, blocks, _ := strings.Cut(req.user, "Translate these blocks:"); strings.Contains(blocks, text) {
+			found = append(found, req)
+		}
+	}
+	return found
+}
+
+var stubBlock = regexp.MustCompile(`(?s)<block (\d+)>\n(.*?)\n</block>`)
+
+// stubTranslation "translates" each numbered block by putting "pt:" before
+// it, which keeps names and inline markers as they were. Markers in the
+// blocks simulate an outage, a slow model, or a reply that drops a block.
+func stubTranslation(w http.ResponseWriter, r *http.Request, system, user string) {
+	translationRequestsMu.Lock()
+	translationRequests = append(translationRequests, translationRequest{system: system, user: user})
+	translationRequestsMu.Unlock()
+
+	_, blocks, ok := strings.Cut(user, "Translate these blocks:")
+	if !ok {
+		http.Error(w, "translation prompt carries no blocks", http.StatusBadRequest)
+		return
+	}
+	if strings.Contains(blocks, "translation-outage") {
+		http.Error(w, "model overloaded", http.StatusServiceUnavailable)
+		return
+	}
+	if strings.Contains(blocks, "slow-translation") {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(3 * time.Second):
+		}
+	}
+	counter, _ := translationCalls.LoadOrStore(blocks, new(atomic.Int64))
+	calls := counter.(*atomic.Int64).Add(1)
+
+	found := stubBlock.FindAllStringSubmatch(blocks, -1)
+	if strings.Contains(blocks, "always-miscount") || (strings.Contains(blocks, "miscount-twice") && calls <= 2) {
+		found = found[:len(found)-1] // a model merging the last Block away
+	}
+	var reply strings.Builder
+	for _, b := range found {
+		fmt.Fprintf(&reply, "<block %s>\npt:%s\n</block>\n", b[1], b[2])
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	chunk, _ := json.Marshal(map[string]any{"choices": []map[string]any{{"delta": map[string]string{"content": reply.String()}}}})
+	fmt.Fprintf(w, "data: %s\n\n", chunk)
+	fmt.Fprint(w, "data: [DONE]\n\n")
+}
+
 // chatCalls counts chat completions, so tests can prove the model was skipped.
 var chatCalls atomic.Int64
 
@@ -159,6 +229,10 @@ func stubChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Model != "qwen3:8b" {
 		http.Error(w, "unknown model "+req.Model, http.StatusNotFound)
+		return
+	}
+	if strings.Contains(req.Messages[0].Content, "literary translator") {
+		stubTranslation(w, r, req.Messages[0].Content, req.Messages[len(req.Messages)-1].Content)
 		return
 	}
 	if req.ResponseFormat.Type == "json_object" {

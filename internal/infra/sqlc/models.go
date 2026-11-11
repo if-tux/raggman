@@ -87,6 +87,12 @@ type Termbase struct {
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
+type TranslatedBlock struct {
+	TranslationID uuid.UUID `json:"translation_id"`
+	Position      int32     `json:"position"`
+	Translation   string    `json:"translation"`
+}
+
 type Translation struct {
 	ID            uuid.UUID          `json:"id"`
 	BookID        uuid.UUID          `json:"book_id"`

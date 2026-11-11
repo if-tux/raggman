@@ -67,3 +67,11 @@ SET status = 'QUEUED',
     locked_by = NULL,
     heartbeat_at = NULL
 WHERE id = sqlc.arg(id) AND locked_by = sqlc.arg(locked_by);
+
+-- name: HoldJob :one
+-- Locks the Job row for a transaction, only for the worker holding its lock;
+-- no row means the Job was reclaimed by another worker. Lets work that
+-- commits in steps make sure, at each step, that it still owns the Job.
+SELECT id FROM job_queue
+WHERE id = $1 AND locked_by = $2
+FOR UPDATE;

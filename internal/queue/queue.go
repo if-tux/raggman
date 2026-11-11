@@ -101,6 +101,17 @@ func Complete(ctx context.Context, q *sqlc.Queries, job sqlc.JobQueue) error {
 	return nil
 }
 
+// Hold locks the Job for the transaction behind q, failing with ErrLostLock
+// if another worker reclaimed it. Work that commits in several steps calls
+// it in each one, so a worker that lost its lock stops writing.
+func Hold(ctx context.Context, q *sqlc.Queries, job sqlc.JobQueue) error {
+	_, err := q.HoldJob(ctx, sqlc.HoldJobParams{ID: job.ID, LockedBy: job.LockedBy})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrLostLock
+	}
+	return err
+}
+
 // Workers run Jobs. ShutdownGrace is how long an in-flight Job may finish
 // after shutdown starts; tests lower it.
 type Workers struct {

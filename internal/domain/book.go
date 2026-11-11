@@ -28,6 +28,9 @@ const (
 type Block struct {
 	Source string
 	Kind   BlockKind
+	// Position is the Block's place in the Book's reading order, from 0. It
+	// is set when Blocks are loaded from storage, not when an EPUB is read.
+	Position int
 	// Chapter is the 1-based position of the Block's chapter in the Book's
 	// reading order; 0 for the title and the table of contents.
 	Chapter int

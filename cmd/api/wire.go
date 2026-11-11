@@ -22,12 +22,13 @@ import (
 // jobGroups registers the Handler of every Job type the workers run.
 // Translation work gets workers of its own, one at a time: it runs for hours
 // on a local model, and must not keep Ingestion waiting.
-//
-// Translation Jobs have no Handler yet, so they wait in the queue.
-func jobGroups(ingest *ingestion.Handler, extraction *translation.Extraction) []queue.Group {
+func jobGroups(ingest *ingestion.Handler, extraction *translation.Extraction, translating *translation.Translating) []queue.Group {
 	return []queue.Group{
 		{Workers: 2, Handlers: queue.Handlers{documents.JobTypeIngestion: ingest}},
-		{Workers: 1, Handlers: queue.Handlers{translation.JobTypeExtraction: extraction}},
+		{Workers: 1, Handlers: queue.Handlers{
+			translation.JobTypeExtraction:  extraction,
+			translation.JobTypeTranslation: translating,
+		}},
 	}
 }
 
@@ -44,6 +45,7 @@ func InitializeApp(ctx context.Context) (*App, func(), error) {
 		api.NewHandler,
 		translation.NewService,
 		translation.NewExtraction,
+		translation.NewTranslating,
 		ingestion.New,
 		jobGroups,
 		queue.New,

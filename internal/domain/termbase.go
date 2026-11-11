@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -133,9 +132,7 @@ func CountOccurrences(texts []string, expr string) int {
 				break
 			}
 			start, end := from+i, from+i+len(expr)
-			before, _ := utf8.DecodeLastRuneInString(text[:start])
-			after, _ := utf8.DecodeRuneInString(text[end:])
-			if !isWordRune(before) && !isWordRune(after) {
+			if isWholeWord(text, start, end) {
 				n++
 			}
 			from = end
@@ -144,30 +141,11 @@ func CountOccurrences(texts []string, expr string) int {
 	return n
 }
 
+// isWholeWord reports whether text[start:end] is not part of a longer word.
+func isWholeWord(text string, start, end int) bool {
+	before, _ := utf8.DecodeLastRuneInString(text[:start])
+	after, _ := utf8.DecodeRuneInString(text[end:])
+	return !isWordRune(before) && !isWordRune(after)
+}
+
 func isWordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
-
-var blockMarkerPattern = regexp.MustCompile(`⟦/?\d+/?⟧`)
-
-// PlainText is a Block's source without its inline markers.
-func PlainText(source string) string {
-	return blockMarkerPattern.ReplaceAllString(source, "")
-}
-
-// Windows groups consecutive Blocks of one chapter into Windows of at most
-// budget characters of source. A Window never crosses a chapter, and a Block
-// larger than the budget gets a Window of its own.
-func Windows(blocks []Block, budget int) [][]Block {
-	var windows [][]Block
-	size := 0
-	for _, b := range blocks {
-		n := utf8.RuneCountInString(b.Source)
-		last := len(windows) - 1
-		if last < 0 || windows[last][0].Chapter != b.Chapter || size+n > budget {
-			windows = append(windows, nil)
-			last, size = last+1, 0
-		}
-		windows[last] = append(windows[last], b)
-		size += n
-	}
-	return windows
-}
