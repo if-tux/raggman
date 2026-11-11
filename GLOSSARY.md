@@ -60,7 +60,7 @@ The register a Translation is written in: formal, informal or children's. A Leve
 _Avoid_: style, tone, mode
 
 **Block**:
-One paragraph, heading or list item of a Book; the atomic unit of translation, translated exactly once and never cut.
+One piece of a Book's text that stands on its own: a paragraph, heading, list item or table cell, or the Book's title, a table-of-contents entry or an image description. The atomic unit of translation, translated exactly once and never cut.
 _Avoid_: segment, chunk, paragraph, sentence
 
 **Window**:

@@ -10,6 +10,29 @@ import (
 	pgvector_go "github.com/pgvector/pgvector-go"
 )
 
+type Block struct {
+	BookID   uuid.UUID `json:"book_id"`
+	Position int32     `json:"position"`
+	Chapter  int32     `json:"chapter"`
+	Kind     string    `json:"kind"`
+	Source   string    `json:"source"`
+}
+
+type Book struct {
+	ID          uuid.UUID          `json:"id"`
+	FileHash    string             `json:"file_hash"`
+	Filename    string             `json:"filename"`
+	Title       string             `json:"title"`
+	Language    string             `json:"language"`
+	TotalBlocks int32              `json:"total_blocks"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type BookFile struct {
+	BookID  uuid.UUID `json:"book_id"`
+	Content []byte    `json:"content"`
+}
+
 type Chunk struct {
 	ID         uuid.UUID          `json:"id"`
 	DocumentID uuid.UUID          `json:"document_id"`

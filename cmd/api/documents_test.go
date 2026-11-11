@@ -39,13 +39,7 @@ func ingestionJobs(t *testing.T, pool *pgxpool.Pool, documentID string) int {
 
 func remove(t *testing.T, server *httptest.Server, id string) *http.Response {
 	t.Helper()
-	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/documents/"+id, nil)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("DELETE /documents/%s: %v", id, err)
-	}
-	t.Cleanup(func() { resp.Body.Close() })
-	return resp
+	return del(t, server.URL+"/documents/"+id)
 }
 
 func TestSubmittingEnqueuesOneIngestion(t *testing.T) {

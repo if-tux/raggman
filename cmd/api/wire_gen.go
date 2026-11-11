@@ -10,6 +10,7 @@ import (
 	"context"
 	"github.com/BrunoPereiradosSantos/raggman/internal/answering"
 	"github.com/BrunoPereiradosSantos/raggman/internal/api"
+	"github.com/BrunoPereiradosSantos/raggman/internal/books"
 	"github.com/BrunoPereiradosSantos/raggman/internal/documents"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/environment"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/logger"
@@ -37,8 +38,9 @@ func InitializeApp(ctx context.Context) (*App, func(), error) {
 		return nil, nil, err
 	}
 	service := documents.NewService(pool)
+	booksService := books.NewService(pool)
 	answeringService := answering.New(pool, environmentEnvironment, tracerProvider)
-	handler := api.NewHandler(pool, service, answeringService, tracerProvider)
+	handler := api.NewHandler(pool, service, booksService, answeringService, tracerProvider)
 	workers := ingestion.New(pool, environmentEnvironment, slogLogger, tracerProvider)
 	app := &App{
 		Tracing:   tracerProvider,

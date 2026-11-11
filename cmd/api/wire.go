@@ -7,6 +7,7 @@ import (
 
 	"github.com/BrunoPereiradosSantos/raggman/internal/answering"
 	"github.com/BrunoPereiradosSantos/raggman/internal/api"
+	"github.com/BrunoPereiradosSantos/raggman/internal/books"
 	"github.com/BrunoPereiradosSantos/raggman/internal/documents"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/environment"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/logger"
@@ -24,6 +25,7 @@ func InitializeApp(ctx context.Context) (*App, func(), error) {
 		postgres.NewDatabasePool,
 		telemetry.NewTracerProvider,
 		documents.NewService,
+		books.NewService,
 		answering.New,
 		api.NewHandler,
 		ingestion.New,

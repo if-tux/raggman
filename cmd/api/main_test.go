@@ -89,6 +89,12 @@ type documentJSON struct {
 
 func submitPDF(t *testing.T, server *httptest.Server, filename string, content []byte) *http.Response {
 	t.Helper()
+	return submitFile(t, server, "/documents", filename, content)
+}
+
+// submitFile uploads content as the "file" field of a multipart request.
+func submitFile(t *testing.T, server *httptest.Server, path, filename string, content []byte) *http.Response {
+	t.Helper()
 
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
@@ -99,9 +105,20 @@ func submitPDF(t *testing.T, server *httptest.Server, filename string, content [
 	_, _ = part.Write(content)
 	_ = form.Close()
 
-	resp, err := http.Post(server.URL+"/documents", form.FormDataContentType(), &body)
+	resp, err := http.Post(server.URL+path, form.FormDataContentType(), &body)
 	if err != nil {
-		t.Fatalf("POST /documents: %v", err)
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
+
+func del(t *testing.T, url string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodDelete, url, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE %s: %v", url, err)
 	}
 	t.Cleanup(func() { resp.Body.Close() })
 	return resp

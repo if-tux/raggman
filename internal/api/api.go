@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/BrunoPereiradosSantos/raggman/internal/answering"
+	"github.com/BrunoPereiradosSantos/raggman/internal/books"
 	"github.com/BrunoPereiradosSantos/raggman/internal/documents"
 	"github.com/BrunoPereiradosSantos/raggman/internal/domain"
 	"github.com/BrunoPereiradosSantos/raggman/internal/infra/telemetry"
@@ -22,11 +23,12 @@ import (
 type handler struct {
 	pool      *pgxpool.Pool
 	documents *documents.Service
+	books     *books.Service
 	answering *answering.Service
 }
 
-func NewHandler(pool *pgxpool.Pool, docs *documents.Service, answers *answering.Service, tp *sdktrace.TracerProvider) http.Handler {
-	h := &handler{pool: pool, documents: docs, answering: answers}
+func NewHandler(pool *pgxpool.Pool, docs *documents.Service, bks *books.Service, answers *answering.Service, tp *sdktrace.TracerProvider) http.Handler {
+	h := &handler{pool: pool, documents: docs, books: bks, answering: answers}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("POST /documents", h.submitDocument)
@@ -34,6 +36,10 @@ func NewHandler(pool *pgxpool.Pool, docs *documents.Service, answers *answering.
 	mux.HandleFunc("GET /documents/{id}", h.getDocument)
 	mux.HandleFunc("DELETE /documents/{id}", h.removeDocument)
 	mux.HandleFunc("POST /questions", h.askQuestion)
+	mux.HandleFunc("POST /books", h.submitBook)
+	mux.HandleFunc("GET /books", h.listBooks)
+	mux.HandleFunc("GET /books/{id}", h.getBook)
+	mux.HandleFunc("DELETE /books/{id}", h.removeBook)
 	mux.Handle("GET /", web.Handler())
 
 	// otelhttp names each server span after the matched route ("POST
@@ -87,11 +93,12 @@ func internalError(w http.ResponseWriter, r *http.Request, err error) {
 	writeError(w, http.StatusInternalServerError, "internal error")
 }
 
-// documentID parses the {id} path value; malformed ids are treated as unknown.
-func documentID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
+// pathID parses the {id} path value of a document or a book; malformed ids are
+// treated as unknown.
+func pathID(w http.ResponseWriter, r *http.Request, what string) (uuid.UUID, bool) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "document not found")
+		writeError(w, http.StatusNotFound, what+" not found")
 		return uuid.UUID{}, false
 	}
 	return id, true
@@ -111,7 +118,7 @@ func (h *handler) listDocuments(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getDocument(w http.ResponseWriter, r *http.Request) {
-	id, ok := documentID(w, r)
+	id, ok := pathID(w, r, "document")
 	if !ok {
 		return
 	}
@@ -128,7 +135,7 @@ func (h *handler) getDocument(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) removeDocument(w http.ResponseWriter, r *http.Request) {
-	id, ok := documentID(w, r)
+	id, ok := pathID(w, r, "document")
 	if !ok {
 		return
 	}
